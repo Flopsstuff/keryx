@@ -37,6 +37,76 @@ XMOS (the chip itself, firmware v3.2.1):
 - USB-C (UAC 2.0 and DFU), 2 GPIO lines on the FPC, RST and Boot (safe mode) buttons.
 - Footprint for an optional XIAO ESP32S3 connected over I2S + I2C; that setup needs the I2S firmware instead of
   the USB one.
+- The green PWR LED sits on the power rail; no firmware can switch it off.
+
+![Core board, back and front](images/flex-board-overview.jpg)
+
+Images in this document come from the [Seeed wiki](https://wiki.seeedstudio.com/respeaker_flex_introduction/).
+
+## Pins
+
+![Pin headers](images/flex-headers-pinout.jpg)
+
+### XVF3800 header (2×10)
+
+Pin 1 is the square pad; 1–10 run down the outer column, 20–11 down the inner one.
+
+![XVF3800 header schematic](images/flex-xvf-header-schematic.png)
+
+| Pin | Signal | Pin | Signal |
+|---|---|---|---|
+| 1 | X1D11 — I2S MCLK | 20 | X1D10 — I2S BCLK |
+| 2 | X1D01 — I2S LRCK | 19 | X1D22 — I2S DATA1 (processed audio to the host) |
+| 3 | X1D00 — I2S DATA0 (reference in from the host; out in USB builds) | 18 | X1D34 — I2S DATA2 |
+| 4 | GND | 17 | GND |
+| 5 | X0D38 — I2C SDA, 4.7 kΩ pull-up to VDDIO | 16 | X0D00 — SPI CS_N |
+| 6 | X0D37 — I2C SCL, 4.7 kΩ pull-up to VDDIO | 15 | X0D10 — SPI CLK |
+| 7 | X1D13 — button input (active low) | 14 | X0D11 — SPI MOSI |
+| 8 | GND | 13 | X0D39 — SPI MISO |
+| 9 | 5V_IN | 12 | GND |
+| 10 | 5V_IN | 11 | VDDIO (3.3 V) |
+
+The front silkscreen photo says X0D13 on pin 7; the schematic and the back silkscreen say X1D13.
+
+### XIAO ESP32S3
+
+![XIAO schematic](images/flex-xiao-schematic.png)
+
+The GPIO numbers printed inside the XIAO symbol above belong to a different XIAO; the ESP32-S3 numbers below come
+from the XIAO ESP32S3 pinout.
+
+| XIAO | ESP32-S3 | Used for |
+|---|---|---|
+| D0 | GPIO1 (ADC1, touch) | free, on the 4-pin header |
+| D1 | GPIO2 | not on the header; most likely the XVF3800 reset line |
+| D2 | GPIO3 (ADC1, touch, strapping pin) | free, on the 4-pin header |
+| D3 | GPIO4 (ADC1, touch) | free, on the 4-pin header |
+| D4 | GPIO5 | I2C SDA |
+| D5 | GPIO6 | I2C SCL |
+| D6 | GPIO43 | I2S DATA1, audio from the XVF3800 |
+| D7 | GPIO44 | I2S DATA0, audio to the XVF3800 |
+| D8 | GPIO7 | I2S LRCK |
+| D9 | GPIO8 | I2S BCLK |
+| D10 | GPIO9 | I2S MCLK |
+
+The 4-pin header next to the XIAO carries GND, D3, D2 and D0; it has no 3.3 V pin.
+
+### What is free for our own peripherals
+
+- **ESP32 D0, D2, D3** — any function through the GPIO matrix: buttons, an encoder (PCNT), WS2812 data (RMT).
+  All three are ADC1 channels (GPIO1–10 are), so a resistor ladder can put several buttons on one pin; ADC1 keeps
+  working while Wi-Fi is on. D2 (GPIO3) is a strapping pin: fine as a GPIO, but nothing should hold it at a fixed
+  level during boot.
+- **XVF3800 X0D11 and X0D39** — outputs driven with `GPO_WRITE_VALUE`, e.g. plain LEDs through a ~1 kΩ
+  resistor. SPI control is not used by the USB or I2C builds. X0D00 and X0D10 cannot be driven from the Seeed
+  firmware.
+- **XVF3800 X1D13** — a button input; what the Seeed firmware does with it is unknown, and the Seeed
+  `xvf_host.py` has no command to read it.
+- **The shared I2C bus** (header pins 5 and 6, the same lines as XIAO D4/D5) — room for I2C expanders, encoders
+  or LED drivers. Taken addresses: 0x2C (XVF3800); the TLV320AIC3104 codec is usually at 0x18 — confirm with a
+  bus scan. The XMOS pinout also lists this bus as the way the XVF3800 controls the DAC, so in the USB builds it
+  probably acts as a master here; adding a second master needs care.
+- **Power**: 5V_IN (pins 9, 10), VDDIO 3.3 V (pin 11), GND.
 
 ## Our unit
 
