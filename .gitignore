@@ -1,0 +1,21 @@
+# secrets: API keys, Hermes endpoint and token
+.env
+.env.*
+!.env.example
+
+# Python environments
+.venv/
+__pycache__/
+*.pyc
+
+# logs
+*.log
+
+# voice recordings — personal, never published
+recordings/
+
+# editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
