@@ -8,7 +8,7 @@ set -euo pipefail
 
 project=${1:?usage: flash.sh <project>, e.g. flash.sh usb-soundcard}
 cd "$(dirname "$0")/$project"
-. "${IDF_PATH:-$HOME/esp/esp-idf}/export.sh" > /dev/null
+. "${IDF_PATH:-$HOME/esp/esp-idf}/export.sh" > /dev/null 2>&1
 idf.py build > /dev/null
 cd build
 
