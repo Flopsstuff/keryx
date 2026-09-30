@@ -1,0 +1,6 @@
+dependencies:
+  idf: ">=5.1"
+  # espressif/usb_device_uac 1.3.1 with our patches, see firmware/components/usb_device_uac/KERYX.md
+  usb_device_uac:
+    version: "1.3.1"
+    override_path: "../../components/usb_device_uac"

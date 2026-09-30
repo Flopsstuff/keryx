@@ -19,3 +19,12 @@ recordings/
 .vscode/
 *.swp
 .DS_Store
+
+# ESP-IDF build output (sdkconfig is generated from sdkconfig.defaults)
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+.cache/
+# records absolute paths of local components
+dependencies.lock
