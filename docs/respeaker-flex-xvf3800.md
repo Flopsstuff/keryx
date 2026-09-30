@@ -110,7 +110,9 @@ The 4-pin header next to the XIAO carries GND, D3, D2 and D0; it has no 3.3 V pi
 
 ## Our unit
 
-Read with `xvf_host.py` from the Seeed repository on 2026-09-28:
+Since 2026-09-30 the board runs the I2S firmware `respeaker_flex_i2s_c48k2ch_v1.0.4.bin` and talks to the XIAO
+ESP32S3 only; see [I2S mode](#i2s-mode). The readings below were taken over USB with the 6-channel USB firmware
+on 2026-09-28:
 
 | Property | Value |
 |---|---|
@@ -162,6 +164,41 @@ Mux categories (XMOS User Guide, Table 3.2):
 | 10 | Far end at native rate | 0–5 |
 | 11 | Amplified microphone data before system delay | 0–3 |
 | 12 | Amplified far end with system delay | 0 |
+
+## I2S mode
+
+Measured by `firmware/xvf-bringup` on the XIAO ESP32S3 with `respeaker_flex_i2s_c48k2ch_v1.0.4.bin`:
+
+| Property | Value |
+|---|---|
+| I2C devices | 0x18 (TLV320AIC3104 codec), 0x2C (XVF3800) |
+| `VERSION` | 1.0.4 |
+| I2S clocks | **driven by the XVF3800**: BCLK 3.072 MHz, LRCLK 48 kHz, MCLK 24.576 MHz |
+| I2S format | Philips, 32-bit slots, stereo; the ESP32 must run as I2S **slave** |
+| Capture channels | L = `8,0` processed auto-select beam, R = `7,3` ASR auto-select beam |
+| `AUDIO_MGR_OP_UPSAMPLE` / `AUDIO_MGR_OP_PACKED` | 1,1 / 0,0 |
+| Playback | ESP32 → I2S DATA0 → codec → headphone jack works |
+| Not answering over I2C | `BLD_MSG` (status 66), `AIC3104_HP_LEVEL` (status 97) |
+
+The Seeed firmware README calls the I2S images "I2S slave" and the Seeed I2S test sketch runs the ESP32 as master,
+but the bus is already clocked by the XVF3800 as soon as it boots; an ESP32 driving BCLK/LRCLK as well would fight
+it.
+
+Playback start-up: sound sent within the first moments after the ESP32 starts I2S comes out of the headphone jack
+with noise. Sending silence for about a second first, and holding the ESP32's playback data pin (GPIO44) low from
+the start of `app_main` until I2S takes it over, gives a clean first sound. Before `app_main` runs, during the ESP32
+boot, that line still floats; a 10–100 kΩ pull-down on it would cover that window in hardware.
+
+The I2C control protocol: write `{resid, cmd | 0x80, length + 1}`, then read `length + 1` bytes, the first being
+a status (0 = OK, 64 = retry). Parameter ids are the same as over USB (see `xvf_host.py`).
+
+### Switching firmware
+
+- **USB → I2S:** with the USB firmware running, connect the Flex USB-C port (next to RST) and run
+  `dfu-util -R -e -a 1 -D respeaker_flex_i2s_c48k2ch_v1.0.4.bin`. Afterwards the board disappears from USB.
+- **I2S → USB:** power the board off, hold Boot, power it on (safe mode, USB DFU available), then flash a USB
+  image the same way.
+- Alt 1 is the upgrade partition; alt 0 holds the factory safe-mode image and is left alone.
 
 ## Control from macOS
 
