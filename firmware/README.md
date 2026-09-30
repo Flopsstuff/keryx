@@ -41,6 +41,12 @@ Checks that the ESP32, the XVF3800 and the codec work together:
    (400 ms every 2 s, −24 dBFS) to the headphone jack. It holds the playback line low from the start and sends
    1.3 s of silence after I2S starts before the first beep; without that the first beep comes with noise.
 
+## `mic-loopback`
+
+Plays the XVF3800 capture straight back to the headphone jack from the ESP32, no host involved: processed beam in
+the left ear, ASR beam in the right. 2 ms DMA blocks keep the ESP32's share of the delay at about 10 ms. Logs both
+channel levels once a second.
+
 ## `usb-soundcard`
 
 Prototype: the XIAO becomes a USB Audio Class device (`espressif/usb_device_uac` on TinyUSB), bridging the
