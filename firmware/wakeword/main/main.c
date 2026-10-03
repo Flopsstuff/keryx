@@ -13,6 +13,7 @@
 
 #include <math.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "driver/gpio.h"
@@ -48,6 +49,7 @@ static const char *TAG = "wakeword";
 
 static i2s_chan_handle_t i2s_tx, i2s_rx;
 static TaskHandle_t beep_task_handle;
+static int decimate_check;  // kww_decimate_self_check() at start-up, logged with the first report
 
 static void i2s_start(void)
 {
@@ -162,6 +164,12 @@ static void wake_task(void *arg)
                           "+ model %.3f", peak_score, 20.0f * log10f((peak_level + 1) / 32768.0f),
                      (decimate_us + frontend_us + model_us) / 1000.0f / blocks, decimate_us / 1000.0f / blocks,
                      frontend_us / 1000.0f / blocks, model_us / 1000.0f / blocks);
+            if (decimate_check != INT32_MIN) {
+                // logged here, not at start-up: the USB console reconnects too late for the first lines
+                ESP_LOGI(TAG, "esp-dsp decimator vs the plain C one: max difference %d (16-bit steps; -2: esp-dsp "
+                              "unavailable)", decimate_check);
+                decimate_check = INT32_MIN;
+            }
             last_report = now;
             decimate_us = frontend_us = model_us = 0;
             blocks = 0;
@@ -187,6 +195,7 @@ void app_main(void)
         ESP_LOGW(TAG, "no I2C to the XVF3800, ASR output gain left at its default: %s", esp_err_to_name(err));
     }
 
+    decimate_check = kww_decimate_self_check();
     i2s_start();
     ESP_LOGI(TAG, "listening for \"Hey Keryx\" (threshold %.2f); scores start after %d ms", KWW_THRESHOLD, WARMUP_MS);
     xTaskCreatePinnedToCore(beep_task, "beep", 3072, NULL, 4, &beep_task_handle, 0);

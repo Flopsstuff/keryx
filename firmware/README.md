@@ -67,13 +67,15 @@ XVF3800's I2S bus to the host.
 ## `wakeword`
 
 The "Hey Keryx" wake word on the XIAO itself, from `components/keryx_wakeword`: the XVF3800's ASR channel goes
-from 48 to 16 kHz with the filter the training audio went through (`scipy.signal.resample_poly`), into the
+from 48 to 16 kHz with the filter the training audio went through (`scipy.signal.resample_poly`, run in esp-dsp's
+decimating FIR, checked against plain C at start-up), into the
 micro_speech frontend (`components/micro_frontend`, the TFLite Micro code pymicro-features wraps) and the model
 from `wakeword/`, run streaming in float C: each 30 ms only the newest outputs of every layer are computed.
 
 - A detection logs `>>> Hey Keryx! (score …)` and beeps on the headphone jack; the XVF3800 takes that line as its
   echo reference, so the beep does not reach the ASR channel.
-- Once a second the log shows the highest score, the ASR peak level and the processing time per 10 ms of audio.
+- Once a second the log shows the highest score, the ASR peak level and the processing time per 10 ms of audio:
+  about 0.86 ms (decimation 0.15, features 0.43, model 0.28), the model's weights kept in internal RAM.
 - At start-up it sets `AEC_ASROUTGAIN` to 4.0, as `usb-soundcard` does: the model learned the channel at that gain.
 - The model and threshold are `components/keryx_wakeword/kww_weights.h` and `include/kww_config.h`, written by
   `wakeword/export_model.py`.

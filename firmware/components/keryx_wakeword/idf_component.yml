@@ -1,0 +1,4 @@
+dependencies:
+  idf: ">=5.1"
+  # decimating FIR with the ESP32-S3 SIMD build (dsps_fird_f32_aes3)
+  espressif/esp-dsp: "^1.4.0"
