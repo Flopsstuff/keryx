@@ -5,13 +5,14 @@
  * went through, into the micro_speech frontend and the streaming model, all from components/keryx_wakeword. A
  * detection is logged and answered with a short beep on the headphone jack; the XVF3800 reads that line as its
  * echo reference, so the beep does not reach the ASR channel. Once a second the log shows the highest score, the
- * ASR channel's peak level and how long processing 10 ms of audio takes.
+ * ASR channel's peak level and how long processing 10 ms of audio takes, split into decimation, features and model.
  *
  * The XVF3800 must run the I2S firmware, which clocks the bus; the ESP32 is the I2S slave. Logs go over the
  * XIAO's USB serial/JTAG console.
  */
 
 #include <math.h>
+#include <stdbool.h>
 #include <string.h>
 
 #include "driver/gpio.h"
@@ -110,7 +111,7 @@ static void wake_task(void *arg)
     kww_reset(&model);
 
     const int64_t start = esp_timer_get_time();
-    int64_t last_report = start, last_detection = 0, busy_us = 0;
+    int64_t last_report = start, last_detection = 0, decimate_us = 0, frontend_us = 0, model_us = 0;
     int blocks = 0, peak_level = 0;
     float peak_score = 0.0f;
 
@@ -120,7 +121,7 @@ static void wake_task(void *arg)
             ESP_LOGW(TAG, "I2S read returned %u bytes", (unsigned)got);
             continue;
         }
-        const int64_t t0 = esp_timer_get_time();
+        int64_t t0 = esp_timer_get_time();
 
         // the right slot is the ASR output; its top 16 bits are what usb-soundcard sent and we recorded
         for (int i = 0; i < BLOCK_FRAMES; i++) {
@@ -129,10 +130,17 @@ static void wake_task(void *arg)
             peak_level = level > peak_level ? level : peak_level;
         }
         size_t n16 = kww_decimate(&decimate, asr, BLOCK_FRAMES, audio16);
+        int64_t t1 = esp_timer_get_time();
+        decimate_us += t1 - t0;
         int nframes = kww_frontend_process(&frontend, audio16, n16, frames, 4);
+        t0 = esp_timer_get_time();
+        frontend_us += t0 - t1;
         for (int f = 0; f < nframes; f++) {
             float score;
-            if (!kww_push(&model, frames[f], &score)) {
+            t1 = esp_timer_get_time();
+            bool ready = kww_push(&model, frames[f], &score);
+            model_us += esp_timer_get_time() - t1;
+            if (!ready) {
                 continue;
             }
             const int64_t now = esp_timer_get_time();
@@ -146,15 +154,16 @@ static void wake_task(void *arg)
                 xTaskNotifyGive(beep_task_handle);
             }
         }
-        busy_us += esp_timer_get_time() - t0;
         blocks++;
 
         const int64_t now = esp_timer_get_time();
         if (now - last_report >= REPORT_MS * 1000LL) {
-            ESP_LOGI(TAG, "peak score %.3f | ASR peak %.1f dBFS | %.2f ms per 10 ms block", peak_score,
-                     20.0f * log10f((peak_level + 1) / 32768.0f), busy_us / 1000.0f / blocks);
+            ESP_LOGI(TAG, "peak score %.3f | ASR peak %.1f dBFS | per 10 ms: %.3f ms = decimate %.3f + features %.3f "
+                          "+ model %.3f", peak_score, 20.0f * log10f((peak_level + 1) / 32768.0f),
+                     (decimate_us + frontend_us + model_us) / 1000.0f / blocks, decimate_us / 1000.0f / blocks,
+                     frontend_us / 1000.0f / blocks, model_us / 1000.0f / blocks);
             last_report = now;
-            busy_us = 0;
+            decimate_us = frontend_us = model_us = 0;
             blocks = 0;
             peak_level = 0;
             peak_score = 0.0f;

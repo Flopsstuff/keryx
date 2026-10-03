@@ -3,6 +3,14 @@
 #include <math.h>
 #include <string.h>
 
+// Constant tables would otherwise stay in flash and be read through the 32 KB data cache, which the ~120 KB of
+// weights keep evicting: every inference would stream them from flash again. Internal RAM has room for them.
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#define KWW_WEIGHTS DRAM_ATTR
+#else
+#define KWW_WEIGHTS
+#endif
 #include "kww_weights.h"
 
 void kww_reset(kww_state_t *s)
