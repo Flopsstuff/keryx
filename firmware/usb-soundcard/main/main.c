@@ -4,6 +4,8 @@
  * Microphone: XVF3800 capture (48 kHz, 32-bit; L = processed beam, R = ASR beam) goes to the host as 16-bit stereo.
  * Speaker: 16-bit stereo from the host goes out over I2S to the codec and the headphone jack. The XVF3800 reads the
  * same line as its echo-cancellation reference, so AEC keeps working in this mode.
+ * The ASR output gain is set over I2C (ASR_GAIN): the chip resets it to 1.0, which leaves speech at a distance
+ * around -27 dBFS peak; xvf_control keeps trying until the XVF3800 has booted and taken the value.
  *
  * The XVF3800 must run the I2S firmware, which clocks the bus; the ESP32 is the I2S slave. The USB PHY stays with
  * the USB serial/JTAG console for a few seconds after boot so the start-up log can be read, then TinyUSB takes it
@@ -19,10 +21,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "usb_device_uac.h"
+#include "xvf_control.h"
 
 static const char *TAG = "soundcard";
 
 // XIAO ESP32S3 on the reSpeaker Flex
+#define PIN_I2C_SDA GPIO_NUM_5   // D4
+#define PIN_I2C_SCL GPIO_NUM_6   // D5
 #define PIN_I2S_BCLK GPIO_NUM_8  // D9
 #define PIN_I2S_LRCK GPIO_NUM_7  // D8
 #define PIN_I2S_DOUT GPIO_NUM_44 // D7, to XVF3800 I2S DATA0 (playback and AEC reference)
@@ -33,6 +38,7 @@ static const char *TAG = "soundcard";
 #define CHUNK_FRAMES 480        // conversion scratch size, 10 ms
 #define SETTLE_MS 1000          // silence after starting I2S; sound sent earlier comes out with noise
 #define CONSOLE_GRACE_MS 3000   // keep the serial console before TinyUSB takes the USB PHY
+#define ASR_GAIN 4.0f           // AEC_ASROUTGAIN, +12 dB; the ASR path has no limiter, so leave headroom
 
 static i2s_chan_handle_t i2s_tx, i2s_rx;
 
@@ -133,6 +139,14 @@ void app_main(void)
     gpio_config_t dout_cfg = {.pin_bit_mask = 1ULL << PIN_I2S_DOUT, .mode = GPIO_MODE_OUTPUT};
     gpio_config(&dout_cfg);
     gpio_set_level(PIN_I2S_DOUT, 0);
+
+    // the sound card works without it, just quieter on the ASR channel
+    esp_err_t err = xvf_control_init(PIN_I2C_SDA, PIN_I2C_SCL);
+    if (err == ESP_OK) {
+        xvf_set_float_when_ready(XVF_AEC_RESID, XVF_AEC_ASROUTGAIN, ASR_GAIN, "XVF3800 ASR output gain");
+    } else {
+        ESP_LOGW(TAG, "no I2C to the XVF3800, ASR output gain left at its default: %s", esp_err_to_name(err));
+    }
 
     i2s_start();
     vTaskDelay(pdMS_TO_TICKS(SETTLE_MS));

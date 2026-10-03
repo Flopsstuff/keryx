@@ -1,0 +1,236 @@
+# What generate.py asks xAI TTS to say.
+#
+# Every sample draws a group (by weight), a language (by weight, among those the group has texts for), a text,
+# a voice, a speed and a style. Texts are listed per script: `ru` texts go with the `ru` language, `latin` texts
+# with every other language, so "Hey Keryx" gets read with English, German, French... accents.
+#
+# `{...}` marks the wake word inside a longer phrase. In groups with `cut: true` the clip is cut right after it,
+# using the API's per-character timestamps, so the positive ends where the wake word ends, like it will in the
+# stream, but keeps the coarticulation of a real sentence. Speech tags shift those timestamps, so cut groups are
+# always synthesized without a style.
+
+languages:
+  ru: {weight: 4, script: ru}
+  en: {weight: 3, script: latin}
+  de: {weight: 1, script: latin}
+  fr: {weight: 1, script: latin}
+  es: {weight: 1, script: latin}
+  it: {weight: 1, script: latin}
+  pt: {weight: 1, script: latin}
+  tr: {weight: 1, script: latin}
+
+speed: [0.8, 1.3]
+
+# wrapping speech tags and their relative probability
+styles:
+  none: 8
+  soft: 1
+  loud: 1
+  whisper: 1
+  fast: 1
+  slow: 1
+  pitch-high: 1
+  pitch-low: 1
+
+# The wake phrase is "Hey Keryx": «Хей Керикс», «Эй, Керикс» and the English "Hey, Keryx" all count.
+positive:
+  - name: bare
+    weight: 5
+    ru:
+      - "Хей, Керикс"
+      - "Хей Керикс"
+      - "Хей, Керикс!"
+      - "Хей, Керикс?"
+      - "Хэй, Керикс"
+      - "Хэй Керикс!"
+      - "Эй, Керикс"
+      - "Эй Керикс"
+      - "Эй, Керикс!"
+      - "Эй, Керикс?"
+    latin: ["Hey, Keryx", "Hey Keryx", "Hey, Keryx!", "Hey, Keryx?", "Hey Keryx..."]
+
+  # a beat between the two words, as people often leave one
+  - name: pause
+    weight: 1
+    ru: ["Хей... Керикс", "Эй... Керикс", "Хей, [pause] Керикс", "Эй, [pause] Керикс"]
+    latin: ["Hey... Keryx", "Hey, [pause] Keryx"]
+
+  - name: command
+    weight: 4
+    cut: true
+    ru:
+      - "{Хей, Керикс}, включи свет"
+      - "{Хей, Керикс}, какая завтра погода?"
+      - "{Хей Керикс}, поставь таймер на десять минут"
+      - "{Хей, Керикс}, что у меня сегодня в календаре?"
+      - "{Хей Керикс}, сделай погромче"
+      - "{Хей, Керикс}, сколько времени?"
+      - "{Эй, Керикс}, напомни купить молоко"
+      - "{Эй, Керикс}, включи музыку"
+      - "{Эй Керикс}, стоп"
+      - "{Эй, Керикс}, ты тут?"
+      - "{Хэй, Керикс}, расскажи новости"
+      - "{Хэй Керикс}, переведи это на английский"
+    latin:
+      - "{Hey, Keryx}, turn on the lights"
+      - "{Hey, Keryx}, what's the weather tomorrow?"
+      - "{Hey Keryx}, set a timer for ten minutes"
+      - "{Hey, Keryx}, what's on my calendar today?"
+      - "{Hey Keryx}, louder please"
+      - "{Hey, Keryx}, what time is it?"
+      - "{Hey Keryx} play some music"
+      - "{Hey Keryx}, stop"
+      - "{Hey, Keryx}, are you there?"
+
+negative:
+  # words that share most of the sounds of "Керикс"
+  - name: soundalike
+    weight: 5
+    ru:
+      - Ксерокс
+      - Эрикс
+      - Эриксу
+      - к Эриксу
+      - Эрик
+      - Эриксон
+      - риски
+      - низкие риски
+      - Керри
+      - Кери
+      - Кира
+      - Кирилл
+      - Керч
+      - керосин
+      - керамика
+      - керамзит
+      - карикатура
+      - кариес
+      - Херес
+      - кекс
+      - Феникс
+      - Сникерс
+      - Трикс
+      - Фрикс
+      - Рекс
+      - Макс
+      - Сфинкс
+      - Беркс
+      - Мерикс
+      - Терикс
+      - Перикл
+      - Кериков
+      - Керимов
+      - Керкира
+      - Генрикс
+      - Ке
+      - Кер
+      - Кери
+      - Рикс
+      - Ерикс
+      - Керик
+      - Керис
+    latin:
+      - Xerox
+      - Eric's
+      - Erics
+      - Erickson
+      - Kerry
+      - Carrie
+      - Kerrigan
+      - Merrick's
+      - Derrick's
+      - clerics
+      - carrots
+      - Ricks
+      - Rex
+      - tricks
+      - kicks
+      - cherries
+      - Felix
+      - Phoenix
+      - Sphinx
+      - Matrix
+      - Kerry's
+      - Keris
+      - Kerik
+      - Kerr
+      - Ker
+      - Ryx
+      - Eryx
+
+  # the same sound-alikes inside ordinary sentences
+  - name: soundalike-sentence
+    weight: 4
+    ru:
+      - Отнеси документы к Эриксу
+      - У нас в этом квартале низкие риски
+      - Ксерокс опять зажевал бумагу
+      - Керри приедет только завтра
+      - Кирилл, подойди на минутку
+      - Посмотри, какая красивая керамика
+      - В Керчи сегодня ветрено
+      - Купи кекс к чаю
+      - Это не карикатура, это реальность
+      - Сникерс лежит в верхнем ящике
+      - Мы обсудили все риски проекта
+      - Эрик сказал, что опоздает
+      - Нарисуй мне феникса
+      - Кира, ты не видела мои ключи?
+      - Сделай копию на ксероксе
+      - Рекс, место!
+      - Эриксон звонил два раза
+      - Кариес надо лечить вовремя
+      - Тут пахнет керосином
+      - Риски, конечно, есть, но небольшие
+    latin:
+      - Take the papers to Eric's office
+      - The risks are pretty low this quarter
+      - The Xerox jammed again
+      - Kerry is coming tomorrow
+      - Carrie, can you hear me?
+      - She bought a bag of carrots
+      - Those clerics arrived yesterday
+      - Rex, sit down!
+      - The cherries are ripe
+      - Felix called twice
+      - That's one of his old tricks
+      - Kerrigan won the match
+
+  # everyday speech in the same voices, so the model cannot learn "xAI voice means wake word"
+  - name: speech
+    weight: 6
+    ru:
+      - Включи свет на кухне
+      - Какая завтра погода?
+      - Поставь таймер на десять минут
+      - Что у меня сегодня в календаре?
+      - Сделай погромче, пожалуйста
+      - Сколько сейчас времени?
+      - Напомни купить молоко
+      - Я сегодня поздно вернусь
+      - Давай закажем пиццу
+      - Ты не видел мои очки?
+      - Мне кажется, будет дождь
+      - Позвони маме вечером
+      - Где пульт от телевизора?
+      - Кофе уже остыл
+      - Слушай, а что ты думаешь об этом?
+      - Привет, как дела?
+      - Доброе утро!
+      - Спокойной ночи
+      - Окей, договорились
+      - Нет, не надо
+    latin:
+      - Turn on the kitchen lights
+      - What's the weather tomorrow?
+      - Set a timer for ten minutes
+      - What's on my calendar today?
+      - Turn it up a little
+      - What time is it?
+      - Remind me to buy milk
+      - I'll be home late tonight
+      - Let's order some pizza
+      - Have you seen my glasses?
+      - Hey, how are you doing?
+      - Okay, sounds good
+      - Good night

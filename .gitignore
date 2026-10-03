@@ -5,6 +5,7 @@
 
 # Python environments
 .venv/
+.venv-*/
 __pycache__/
 *.pyc
 
@@ -28,3 +29,9 @@ managed_components/
 .cache/
 # records absolute paths of local components
 dependencies.lock
+
+# wake word training data: generated clips, downloaded datasets, features, models
+wakeword/data/
+
+# working notes between sessions, not part of the repository
+HANDOFF.md

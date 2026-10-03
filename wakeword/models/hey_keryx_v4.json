@@ -1,0 +1,18 @@
+{
+ "model": "hey_keryx_v4.pt",
+ "phrase": "Хей / Хэй / Эй, Керикс; Hey, Keryx",
+ "architecture": "MixedNet from train.py: 40 micro_speech bands, 5 blocks, 29985 parameters, 1.91 s receptive field",
+ "trained": "2026-10-03, RTX 3080, 10000 steps, checkpoint of step 6000",
+ "threshold": 0.95,
+ "on_device": "firmware/wakeword, 6 of 6 live «Хей Керикс» detected (scores 0.955-0.999) on 2026-10-03",
+ "held_out_at_0.95": {
+  "false_accepts_per_hour_dinner_party_15h": 0.6,
+  "false_accepts_per_hour_home": 0.0,
+  "recall_wife": 0.72,
+  "recall_me": 1.0,
+  "recall_both_first_session": 0.97,
+  "recall_replayed": 0.84,
+  "recall_tts_unseen_voices": 0.9,
+  "false_hey_plus_similar_word": 0.02
+ }
+}

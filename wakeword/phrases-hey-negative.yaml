@@ -1,0 +1,60 @@
+# What generate.py says for the "Hey Keryx" negatives; see phrases.yaml for how the fields work.
+
+languages:
+  ru: {weight: 4, script: ru}
+  en: {weight: 3, script: latin}
+  de: {weight: 1, script: latin}
+  fr: {weight: 1, script: latin}
+  es: {weight: 1, script: latin}
+  it: {weight: 1, script: latin}
+  pt: {weight: 1, script: latin}
+  tr: {weight: 1, script: latin}
+
+speed: [0.8, 1.3]
+
+# wrapping speech tags and their relative probability
+styles:
+  none: 8
+  soft: 1
+  loud: 1
+  whisper: 1
+  fast: 1
+  slow: 1
+  pitch-high: 1
+  pitch-low: 1
+
+# Negatives for "Hey Keryx": "Hey" followed by something else. Near-identical forms ("Хей Эрикс", "Hey Keris")
+# are left out on purpose: they differ from the wake phrase by one weak sound, nobody says them, and teaching the
+# model that they are "no" would make it doubt a quickly spoken "Хей Керикс".
+negative:
+  # "Hey" + a real word with a similar rhythm
+  - name: hey-soundalike
+    weight: 4
+    ru: ["Хей, Ксерокс", "Хей, кекс", "Эй, Феникс", "Хей, Кирилл", "Эй, Эрик", "Хей, Керри", "Эй, Кира", "Хей, Рекс"]
+    latin: ["Hey Felix", "Hey Ricks", "Hey Merrick", "Hey Derrick", "Hey Phoenix", "Hey Eric", "Hey Kerry", "Hey Rex"]
+
+  # "Hey" + another way to call someone
+  - name: hey-other
+    weight: 3
+    ru: ["Хей, привет", "Эй, слышишь", "Хэй, ребята", "Эй, ты", "Хей, друг", "Эй, мама", "Хей, смотри", "Эй, алло"]
+    latin: ["Hey Siri", "Hey Google", "Hey Jarvis", "Alexa", "Hey there", "Hey guys", "Hey you", "Hey buddy", "Okay Google"]
+
+  # "Hey" inside ordinary speech
+  - name: hey-speech
+    weight: 2
+    ru:
+      - "Эй, подожди меня"
+      - "Хей, как дела?"
+      - "Эй ты, иди сюда"
+      - "Ну эй, хватит уже"
+      - "Эй, кто-нибудь дома?"
+      - "Хей, давай быстрее"
+      - "Эй, а где ключи?"
+      - "Хей, смотри, что я нашёл"
+    latin: ["Hey, what's up?", "Hey, can you help me?", "Hey, wait for me", "Hey, come here", "Hey, is anyone home?", "Hey, look at this"]
+
+  # the phrase broken off early
+  - name: hey-fragment
+    weight: 1
+    ru: ["Хей, Ке...", "Эй, Ке...", "Хей, Кер...", "Эй, Кер..."]
+    latin: ["Hey Ke...", "Hey Ker..."]

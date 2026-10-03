@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Keryx recorder</title>
+<style>
+  :root {
+    --bg: #111418; --panel: #1a1f25; --line: #2a313a; --text: #e6e9ed; --dim: #8b949e;
+    --rec: #e5484d; --ok: #3fb950; --warn: #d29922; --accent: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    user-select: none;
+  }
+  main { max-width: 680px; margin: 0 auto; padding: 20px 16px; }
+  header { display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; margin: 0; flex: 1; }
+  input {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 10px; font: inherit; width: 160px;
+  }
+  .folder { color: var(--dim); font-size: 12px; margin-top: 4px; word-break: break-all; }
+  .stage {
+    margin: 20px 0; padding: 28px 16px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; text-align: center;
+  }
+  .dot {
+    width: 96px; height: 96px; border-radius: 50%; margin: 0 auto 14px; background: var(--line);
+    transition: background .08s, box-shadow .08s;
+  }
+  .rec .dot { background: var(--rec); box-shadow: 0 0 0 10px rgba(229, 72, 77, .25); }
+  .state { font-size: 20px; font-weight: 600; }
+  .hint { color: var(--dim); margin-top: 6px; }
+  .meter { height: 10px; background: var(--line); border-radius: 5px; margin: 18px auto 4px; max-width: 420px; overflow: hidden; }
+  .meter div { height: 100%; width: 0; background: var(--ok); transition: width .04s linear; }
+  .db { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .note { min-height: 20px; margin-top: 10px; color: var(--warn); }
+  .count { font-size: 14px; color: var(--dim); margin-bottom: 8px; }
+  .count b { color: var(--text); font-size: 18px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li {
+    display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-bottom: 1px solid var(--line);
+    font-variant-numeric: tabular-nums;
+  }
+  li .name { flex: 1; font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  li .sec { width: 56px; text-align: right; }
+  li .peak { width: 82px; text-align: right; color: var(--dim); }
+  li .peak.clip { color: var(--rec); }
+  button {
+    background: none; border: 1px solid var(--line); color: var(--text); border-radius: 6px;
+    width: 30px; height: 26px; cursor: pointer; font-size: 13px;
+  }
+  button:hover { border-color: var(--accent); }
+  .long {
+    margin-top: 16px; width: auto; height: auto; padding: 8px 16px; font-size: 14px;
+  }
+  .long.on { background: var(--rec); border-color: var(--rec); }
+  kbd { background: var(--line); border-radius: 4px; padding: 1px 6px; font-family: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Keryx recorder</h1>
+    <label>метка <input id="label" spellcheck="false" title="Enter — сменить"></label>
+  </header>
+  <div class="folder" id="folder"></div>
+
+  <section class="stage" id="stage">
+    <div class="dot"></div>
+    <div class="state" id="state">подключение…</div>
+    <div class="hint">держи <kbd>Space</kbd> — запись · <kbd>⌫</kbd> удалить последний · <kbd>P</kbd> прослушать последний</div>
+    <div class="meter"><div id="bar"></div></div>
+    <div class="db" id="db"></div>
+    <div class="note" id="note"></div>
+    <button class="long" id="long" title="запись до остановки, куски по 10 с">⏺ непрерывная запись</button>
+  </section>
+
+  <div class="count"><b id="count">0</b> дублей</div>
+  <ul id="takes"></ul>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let ws, takes = [], label = "", holding = false, recording = false, continuous = false;
+const player = new Audio();
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = e => handle(JSON.parse(e.data));
+  ws.onclose = () => { $("state").textContent = "нет связи с record.py"; setTimeout(connect, 1000); };
+}
+const send = msg => ws && ws.readyState === 1 && ws.send(JSON.stringify(msg));
+
+function handle(m) {
+  if (m.type === "level") {
+    recording = m.rec;
+    continuous = m.continuous;
+    $("stage").classList.toggle("rec", m.rec);
+    $("state").textContent = continuous ? `● непрерывная запись ${fmt(m.elapsed)} · куски по 10 с`
+      : m.rec ? "● запись" : "готов";
+    $("long").classList.toggle("on", continuous);
+    $("long").textContent = continuous ? "■ остановить" : "⏺ непрерывная запись";
+    const pct = Math.max(0, Math.min(1, (m.db + 60) / 60)) * 100;
+    $("bar").style.width = pct + "%";
+    $("bar").style.background = m.db > -1 ? "var(--rec)" : m.db > -12 ? "var(--warn)" : "var(--ok)";
+    $("db").textContent = `${m.db.toFixed(1)} dBFS`;
+  } else if (m.type === "state") {
+    label = m.label; takes = m.takes;
+    if (document.activeElement !== $("label")) $("label").value = label;
+    $("folder").textContent = m.folder;
+    render();
+  } else if (m.type === "take") {
+    if (m.take.label === label) takes.push(m.take);
+    render();
+    $("note").textContent = m.clipped ? "перегруз — отойди или говори тише" : "";
+  } else if (m.type === "note") {
+    $("note").textContent = m.text;
+  }
+}
+
+const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+$("long").onclick = e => {
+  send({cmd: continuous ? "continuous_stop" : "continuous_start"});
+  e.currentTarget.blur(); // keep Space away from the button
+};
+
+function render() {
+  $("count").textContent = takes.length;
+  $("takes").innerHTML = "";
+  for (const t of [...takes].reverse()) {
+    const li = document.createElement("li");
+    const peak = t.peak === null ? "" : `${t.peak.toFixed(1)} dBFS`;
+    li.innerHTML = `<span class="name"></span><span class="sec">${t.seconds.toFixed(2)} s</span>` +
+      `<span class="peak ${t.peak !== null && t.peak > -1 ? "clip" : ""}">${peak}</span>` +
+      `<button title="прослушать">▶</button><button title="удалить">✕</button>`;
+    li.querySelector(".name").textContent = t.name;
+    const [play, del] = li.querySelectorAll("button");
+    play.onclick = () => playTake(t);
+    del.onclick = () => send({cmd: "delete", label: t.label, name: t.name});
+    $("takes").appendChild(li);
+  }
+}
+
+function playTake(t) {
+  player.src = `/audio/${encodeURIComponent(t.label)}/${encodeURIComponent(t.name)}?${Date.now()}`;
+  player.play();
+}
+
+const typing = () => document.activeElement === $("label");
+
+document.addEventListener("keydown", e => {
+  if (typing()) {
+    if (e.key === "Enter") { send({cmd: "label", label: $("label").value.trim()}); $("label").blur(); }
+    if (e.key === "Escape") { $("label").value = label; $("label").blur(); }
+    return;
+  }
+  if (e.code === "Space") {
+    e.preventDefault();
+    if (continuous) return;
+    if (!e.repeat && !holding) { holding = true; player.pause(); send({cmd: "start"}); }
+  } else if (e.code === "Backspace" && !e.repeat && takes.length) {
+    const last = takes[takes.length - 1];
+    send({cmd: "delete", label: last.label, name: last.name});
+  } else if (e.code === "KeyP" && takes.length) {
+    playTake(takes[takes.length - 1]);
+  }
+});
+document.addEventListener("keyup", e => {
+  if (e.code === "Space" && holding) { holding = false; send({cmd: "stop"}); }
+});
+// releasing Space in another window would never reach us
+window.addEventListener("blur", () => { if (holding) { holding = false; send({cmd: "stop"}); } });
+
+connect();
+</script>
+</body>
+</html>

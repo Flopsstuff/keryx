@@ -53,10 +53,30 @@ Prototype: the XIAO becomes a USB Audio Class device (`espressif/usb_device_uac`
 XVF3800's I2S bus to the host.
 
 - Microphone: 48 kHz, 16-bit stereo; left is the processed beam, right the ASR beam (the XVF3800's L/R outputs).
+- At start-up it sets the XVF3800's ASR output gain (`AEC_ASROUTGAIN`, reset to 1.0 by the chip) to 4.0, +12 dB,
+  over I2C with `components/xvf_control`. The ASR path has no AGC or limiter, so this fixed gain is its whole level
+  control: speech at a distance now peaks around −15 dBFS instead of −27.
 - Speaker: 48 kHz, 16-bit stereo to the headphone jack, with the host's volume and mute applied in software. The
   XVF3800 reads the same line as its echo-cancellation reference.
 - The start-up log is printed over the USB serial console; 4 s after boot TinyUSB takes the USB PHY, the console
-  disappears and the sound card appears (macOS lists it as "usb uac").
+  disappears and the sound card appears (macOS lists it as "Keryx").
 - To flash again after that, run `./flash.sh usb-soundcard` and press RESET on the XIAO (or replug it): the script
   catches the serial console in its first seconds and flashes then. Holding BOOT on the XIAO while it powers up did
   not bring up the ROM download mode on our board.
+
+## `wakeword`
+
+The "Hey Keryx" wake word on the XIAO itself, from `components/keryx_wakeword`: the XVF3800's ASR channel goes
+from 48 to 16 kHz with the filter the training audio went through (`scipy.signal.resample_poly`), into the
+micro_speech frontend (`components/micro_frontend`, the TFLite Micro code pymicro-features wraps) and the model
+from `wakeword/`, run streaming in float C: each 30 ms only the newest outputs of every layer are computed.
+
+- A detection logs `>>> Hey Keryx! (score …)` and beeps on the headphone jack; the XVF3800 takes that line as its
+  echo reference, so the beep does not reach the ASR channel.
+- Once a second the log shows the highest score, the ASR peak level and the processing time per 10 ms of audio.
+- At start-up it sets `AEC_ASROUTGAIN` to 4.0, as `usb-soundcard` does: the model learned the channel at that gain.
+- The model and threshold are `components/keryx_wakeword/kww_weights.h` and `include/kww_config.h`, written by
+  `wakeword/export_model.py`.
+
+The console stays on the USB serial port, so `idf.py monitor` (or `./flash.sh wakeword` and then any serial
+terminal) shows the log. To record through the board again, flash `usb-soundcard`.
