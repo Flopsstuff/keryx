@@ -3,52 +3,8 @@
 ESP-IDF projects for the XIAO ESP32S3 on the reSpeaker Flex. The XVF3800 has to run the I2S firmware; see
 [I2S mode](../docs/respeaker-flex-xvf3800.md#i2s-mode) in the board notes.
 
-## Installing a release (no ESP-IDF)
-
-1. **The XVF3800 on the I2S firmware** (once per reSpeaker Flex). The Flex ships with USB firmware, which does not
-   clock the I2S bus the XIAO listens to. Get `respeaker_flex_i2s_c48k2ch_v1.0.4.bin` from
-   [the reSpeaker Flex repository](https://github.com/respeaker/reSpeaker_Flex) (`xmos_firmwares/i2s`), connect the
-   **Flex's** USB-C port (next to RST, not the XIAO's) and run
-   `dfu-util -R -e -a 1 -D respeaker_flex_i2s_c48k2ch_v1.0.4.bin` (`brew install dfu-util` / `apt install
-   dfu-util`); the board then disappears from USB. Going back and more:
-   [Switching firmware](../docs/respeaker-flex-xvf3800.md#switching-firmware). `status` on the board's console tells
-   whether this is done: `xvf=ok version=1.0.4 i2s=running`; `xvf=no_answer` or `i2s=no_clock` mean it is not.
-2. **The XIAO**, through its own USB-C port: `python firmware/flash_release.py` with a Python that has esptool
-   (`pip install esptool`; the repository's `setup.sh` uses the bridge's venv). It finds the board by USB ID, puts
-   it into the bootloader itself if it already runs Keryx (otherwise it asks for BOOT + RESET), writes
-   `firmware/release/` part by part, so the pairing in NVS survives, and waits until the board reports the new
-   version. `firmware/release/` holds only the latest release (`*.bin` in Git LFS: `git lfs pull` first);
-   `manifest.json` there also suits ESP Web Tools. `firmware/release.sh` builds a new one from a committed tree.
-3. **Pairing** with the voice bridge: `keryx-bridge pair` (see `bridge/`).
-
-## Toolchain
-
-ESP-IDF v5.5.5, installed once:
-
-```bash
-mkdir -p ~/esp && cd ~/esp
-git clone -b v5.5.5 --depth 1 --recursive --shallow-submodules https://github.com/espressif/esp-idf.git
-cd esp-idf && ./install.sh esp32s3
-brew install ninja ccache
-```
-
-Every new shell needs `. ~/esp/esp-idf/export.sh` before `idf.py`.
-
-## Building and flashing
-
-Connect the XIAO's own USB-C port (the Flex port next to RST belongs to the XVF3800), then:
-
-```bash
-cd firmware/<project>
-idf.py set-target esp32s3        # first build only
-idf.py -p /dev/cu.usbmodem* flash monitor
-```
-
-or, for any project, `./flash.sh <project>`. It finds the board by USB ID: if `usb-soundcard` runs, it sends the
-`bootloader` command to its serial port; with firmware that keeps the serial/JTAG console it flashes straight away;
-otherwise it asks for RESET on the XIAO.
-
-Logs go over the XIAO's USB serial/JTAG port: GPIO43/44, the UART0 pins, carry I2S data on this board.
+Flashing a release onto the board, with no ESP-IDF: [docs/flashing.md](../docs/flashing.md). Building, development
+builds, console and releases: [docs/building.md](../docs/building.md).
 
 ## `xvf-bringup`
 
