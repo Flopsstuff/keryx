@@ -95,9 +95,14 @@ predecessors.
 - One task reads I2S in 5 ms blocks and feeds both the wake word (ASR channel, as in `wakeword`) and the USB
   microphone (48 kHz, 16-bit stereo: processed beam, ASR beam) through a stream buffer. The XVF3800 clocks I2S and
   the host clocks USB, so audio older than 20 ms is dropped when the host reads.
-- Playback: the host's 1 ms packets go into a second buffer; a playback task writes I2S without a break, starting
-  once 15 ms are queued and dropping the excess beyond 60 ms. Writing each packet straight to I2S, as before, left
-  the DMA a few ms of slack and played gaps.
+- Playback: the host's packets go into a second buffer; a playback task writes I2S without a break, starting once
+  30 ms are queued and dropping the excess beyond 80 ms. The sound card is asynchronous: its feedback endpoint asks
+  the host for slightly more or fewer samples to keep ~40 ms queued, so the host follows the XVF3800's clock (the
+  UAC component's own FIFO-count feedback lost ~0.4 % of the audio, see `components/usb_device_uac/KERYX.md`). A
+  30 s sine plays without a single gap; the report shows the host's real rate.
+- AEC: with clean playback the echo of speech from a speaker on the headphone jack reaches the ASR beam at the noise
+  floor. The XVF3800's `AUDIO_MGR_SYS_DELAY` of −30 samples in this I2S build is right: 0, 12, 30 or 60 let the
+  echo through.
 - A detection prints `wake score=0.973` on the serial port (`components/keryx_console`, as in `usb-soundcard`) and
   plays a chime on the headphone jack, mixed into the host's playback. `sound thinking` loops a quiet "thinking"
   sound until `sound stop`, until the host's audio starts (above −54 dBFS) or for 60 s at most; `sound wake`
@@ -105,8 +110,10 @@ predecessors.
   `keryx/main/keryx_sounds.h`; without it, candidates to listen to go to `sounds/candidates/`). The log goes to the same port, with a report every
   5 s: peak score, ASR level, processing time per 5 ms block (about 0.5 ms), USB microphone and speaker buffers.
 - Serial port commands besides `bootloader` and `reboot`: `loop on` puts the XVF3800's echo reference — what was
-  played — on the left capture channel instead of the processed beam, to measure the playback path; `loop off`
-  restores it.
+  played — on the left capture channel instead of the processed beam, to measure the playback path; `loop mic`
+  puts microphone 0 there, before AEC; `loop off` restores the beam. `xvf get|set <resid> <cmd> <int32|float|uint8>
+  [count | values…]` reads or writes any XVF3800 parameter (e.g. `xvf get 33 3 int32`, AEC converged). While
+  `loop on` is set, the ASR beam lets echo through: it is for measuring only.
 - Pairing, through the same serial port (`components/keryx_net`): `set ssid|password|bridge|token <value>`,
   `config`, `erase`, `wifi scan`, `status`, `net check <host> <port>` (can the board open a TCP connection there:
   is the bridge reachable from this network?); answers end with an `ok` or `error` line. The settings live in NVS and

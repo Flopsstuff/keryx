@@ -194,7 +194,10 @@ void tud_audio_feedback_params_cb(uint8_t func_id, uint8_t alt_itf, audio_feedba
     (void)func_id;
     (void)alt_itf;
     // Set feedback method to fifo counting
-    feedback_param->method = AUDIO_FEEDBACK_METHOD_FIFO_COUNT;
+    // Keryx patch: the application sets the feedback itself (uac_device_speaker_rate()), from the fill of its own
+    // playback buffer; the FIFO count no longer says anything once the speaker task empties the FIFO at once.
+    feedback_param->method = AUDIO_FEEDBACK_METHOD_DISABLED;
+    tud_audio_n_fb_set(func_id, (s_uac_device->current_sample_rate << 16) / 1000);
     feedback_param->sample_freq = s_uac_device->current_sample_rate;
 
     ESP_LOGD(TAG, "Feedback method: %d, sample freq: %"PRIu32"", feedback_param->method, feedback_param->sample_freq);
@@ -386,21 +389,11 @@ bool tud_audio_rx_done_isr(uint8_t rhport, uint16_t n_bytes_received, uint8_t fu
         tud_audio_n_clear_ep_out_ff(func_id);
     }
     last_time = now;
+    (void)new_play;
 
-    int bytes_remained = tud_audio_n_available(func_id);
-
-    size_t bytes_require = s_uac_device->spk_bytes_per_ms;
-
-    if (new_play) {
-        /*!< Buffer a segment of data in the I2S and control the data size to be half of the UAC FIFO size. */
-        bytes_require = SPK_INTERVAL_MS * s_uac_device->spk_bytes_per_ms / 2;
-        if (bytes_remained < bytes_require) {
-            return true;
-        }
-        new_play = false;
-    }
-
-    s_uac_device->spk_data_size = tud_audio_n_read(func_id, s_uac_device->spk_buf, bytes_require);
+    // Keryx patch: only wake the speaker task, which takes everything queued in the EP OUT FIFO. Upstream read exactly
+    // 1 ms per packet into one buffer here: a packet the task had not taken yet was overwritten, and the extra frame
+    // the host sends now and then piled up in the FIFO until it overflowed; ~0.4 % of the audio was lost.
     xTaskNotifyGive(s_uac_device->spk_task_handle);
     return true;
 }
@@ -440,14 +433,20 @@ static void usb_spk_task(void *pvParam)
         }
         // clear the notification
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        if (s_uac_device->spk_data_size == 0) {
-            continue;
+        // Keryx patch: take everything the FIFO holds, in whole frames (see tud_audio_rx_done_isr)
+        const size_t frame = SPEAK_CHANNEL_NUM * CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX;
+        for (;;) {
+            size_t n = tud_audio_n_available(0);
+            n = n < sizeof(s_uac_device->spk_buf) ? n : sizeof(s_uac_device->spk_buf);
+            n -= n % frame;
+            if (n == 0) {
+                break;
+            }
+            n = tud_audio_n_read(0, s_uac_device->spk_buf, n);
+            if (n > 0 && s_uac_device->user_cfg.output_cb) {
+                s_uac_device->user_cfg.output_cb((uint8_t *)s_uac_device->spk_buf, n, s_uac_device->user_cfg.cb_ctx);
+            }
         }
-        // playback the data from the ring buffer chunk by chunk
-        if (s_uac_device->user_cfg.output_cb) {
-            s_uac_device->user_cfg.output_cb((uint8_t *)s_uac_device->spk_buf, s_uac_device->spk_data_size, s_uac_device->user_cfg.cb_ctx);
-        }
-        s_uac_device->spk_data_size = 0;
     }
 }
 #endif
@@ -485,6 +484,14 @@ static void usb_mic_task(void *pvParam)
     }
 }
 #endif
+
+esp_err_t uac_device_speaker_rate(float ratio)
+{
+    // Keryx patch: feedback in samples per 1 ms frame, 16.16; TinyUSB converts it to 10.14 for macOS
+    ESP_RETURN_ON_FALSE(s_uac_device != NULL, ESP_ERR_INVALID_STATE, TAG, "not initialised");
+    double samples_per_ms = s_uac_device->current_sample_rate / 1000.0 * ratio;
+    return tud_audio_fb_set((uint32_t)(samples_per_ms * 65536.0 + 0.5)) ? ESP_OK : ESP_FAIL;
+}
 
 esp_err_t uac_device_init(uac_device_config_t *config)
 {

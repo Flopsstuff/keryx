@@ -17,5 +17,12 @@ Copied from the ESP Component Registry, version 1.3.1
 
 - `Kconfig.uac`: the USB task priorities may go up to 24 (upstream: 15), so that USB audio can run above lwIP's
   task (18) and Wi-Fi traffic does not starve it.
+- `usb_device_uac.c`: `tud_audio_rx_done_isr()` only wakes the speaker task, and the task reads everything queued
+  in the EP OUT FIFO in whole frames. Upstream read exactly 1 ms per packet into a single buffer: a packet the task
+  had not yet taken was overwritten, and the occasional extra frame from the host piled up in the FIFO until it
+  overflowed. The board received ~47 800 instead of 48 000 samples per second and clicked.
+- `usb_device_uac.c`, `include/usb_device_uac.h`: the speaker's feedback is no longer the FIFO count (meaningless
+  once the task empties the FIFO at once: the host then sent 48 790 samples per second) but set by the application
+  with `uac_device_speaker_rate()`, from the fill of its own playback buffer.
 
 When updating to a newer upstream version, copy it over this directory and re-apply the changes above.

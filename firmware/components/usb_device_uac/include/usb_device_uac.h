@@ -46,6 +46,13 @@ typedef struct  {
  */
 esp_err_t uac_device_init(uac_device_config_t *config);
 
+/**
+ * @brief Keryx patch: asks the host to send the speaker stream at `ratio` times the nominal sample rate, through the
+ *        feedback endpoint (asynchronous mode). Call it with the fill of the playback buffer, e.g. 1.002 when it runs
+ *        low; 1.0 restores the nominal rate.
+ */
+esp_err_t uac_device_speaker_rate(float ratio);
+
 #ifdef __cplusplus
 }
 #endif

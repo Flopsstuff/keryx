@@ -29,6 +29,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "driver/gpio.h"
@@ -65,8 +66,11 @@ static const char *TAG = "keryx";
 #define MIC_BUFFER_MS 100       // stream buffer between capture and the USB microphone
 #define MAX_LAG_MS 20           // older audio is dropped when the host reads
 #define PLAY_BUFFER_MS 100      // stream buffer between the USB speaker and the playback task
-#define PLAY_PRIME_MS 15        // queued before playing starts: covers USB and scheduling jitter
-#define PLAY_MAX_MS 60          // more queued than this: the host runs ahead, the excess is dropped
+#define PLAY_PRIME_MS 30        // queued before playing starts: covers USB and scheduling jitter (15 was not enough with Wi-Fi traffic)
+#define PLAY_MAX_MS 80          // more queued than this: the host runs ahead, the excess is dropped
+#define PLAY_TARGET_MS 40       // the USB feedback steers the host's rate to keep this much queued
+#define PLAY_STEER 0.0002f      // rate change per ms of difference: 10 ms off asks for 0.2 % more or less
+#define PLAY_STEER_MAX 0.005f
 #define SETTLE_MS 1000          // silence after starting I2S; sound sent earlier comes out with noise
 #define CONSOLE_GRACE_MS 3000   // keep the serial/JTAG console (and esptool) before TinyUSB takes the USB PHY
 #define ASR_GAIN 4.0f           // AEC_ASROUTGAIN, +12 dB: the wake word model learned the channel at this gain
@@ -86,6 +90,7 @@ static const char *TAG = "keryx";
 #define XVF_AUDIO_MGR_OP_L 15
 static const uint8_t OP_L_BEAM[2] = {8, 0};       // user chosen channel: the processed auto-select beam
 static const uint8_t OP_L_REFERENCE[2] = {4, 0};  // far end: the echo reference, i.e. our playback
+static const uint8_t OP_L_MIC[2] = {11, 0};       // amplified microphone 0 before the system delay: echo before AEC
 
 static i2s_chan_handle_t i2s_tx, i2s_rx;
 static StreamBufferHandle_t mic_buffer, play_buffer;
@@ -99,6 +104,7 @@ static volatile uint32_t capture_overruns;     // blocks that did not fit into t
 static volatile uint32_t play_underruns;       // the host's audio ran out while it was still playing
 static volatile uint32_t play_overflows;       // packets that did not fit into the playback buffer
 static volatile uint32_t play_dropped_bytes;   // dropped because the host ran ahead
+static volatile uint32_t play_received_bytes;  // from the host, to measure its real rate
 static volatile uint32_t i2s_tx_late;          // DMA blocks that went out as silence: the playback task was late
 
 // speaker gain in Q15, from the host's volume and mute controls
@@ -170,6 +176,14 @@ static void playback_task(void *arg)
     int thinking_pos = 0, thinking_fade = 0;  // fade: frames left of a fade-out, 0 when not fading
     for (;;) {
         size_t queued = xStreamBufferBytesAvailable(play_buffer);
+        // asynchronous USB: the host follows our clock (the XVF3800's) through the feedback endpoint
+        static float level_ms = PLAY_TARGET_MS, rate_set = 1.0f;
+        level_ms += 0.05f * ((float)queued / MS_BYTES - level_ms);  // ~100 ms average
+        float rate = 1.0f + PLAY_STEER * (PLAY_TARGET_MS - level_ms);
+        rate = rate > 1.0f + PLAY_STEER_MAX ? 1.0f + PLAY_STEER_MAX : rate < 1.0f - PLAY_STEER_MAX ? 1.0f - PLAY_STEER_MAX : rate;
+        if (fabsf(rate - rate_set) > 0.00005f && uac_device_speaker_rate(rate) == ESP_OK) {
+            rate_set = rate;
+        }
         if (!playing && queued >= PLAY_PRIME_MS * MS_BYTES) {
             playing = true;
         }
@@ -328,13 +342,15 @@ static void capture_task(void *arg)
             bool playing = now - last_playback_us < PLAYBACK_IDLE_MS * 1000LL;
             ESP_LOGI(TAG, "peak score %.3f | ASR peak %.1f dBFS | %.2f ms per 5 ms | USB mic %s, lag %u ms, "
                           "dropped %u ms, short reads %u, overruns %u | USB speaker %s, queued %u ms, "
-                          "underruns %u, overflows %u, dropped %u ms | I2S late %u", peak_score,
+                          "underruns %u, overflows %u, dropped %u ms, rate %u Hz | I2S late %u", peak_score,
                      20.0f * log10f((peak_level + 1) / 32768.0f), busy_us / 1000.0f / blocks,
                      recording ? "on" : "off", (unsigned)(xStreamBufferBytesAvailable(mic_buffer) / MS_BYTES),
                      (unsigned)(mic_dropped_bytes / MS_BYTES), (unsigned)mic_short_reads,
                      (unsigned)capture_overruns, playing ? "on" : "off",
                      (unsigned)(xStreamBufferBytesAvailable(play_buffer) / MS_BYTES), (unsigned)play_underruns,
-                     (unsigned)play_overflows, (unsigned)(play_dropped_bytes / MS_BYTES), (unsigned)i2s_tx_late);
+                     (unsigned)play_overflows, (unsigned)(play_dropped_bytes / MS_BYTES),
+                     (unsigned)((uint64_t)play_received_bytes * 1000000 / FRAME_BYTES / (now - last_report)),
+                     (unsigned)i2s_tx_late);
             last_report = now;
             busy_us = 0;
             blocks = 0;
@@ -344,7 +360,7 @@ static void capture_task(void *arg)
             keryx_link_report(link_line, sizeof(link_line));
             ESP_LOGI(TAG, "%s", link_line);
             mic_dropped_bytes = mic_short_reads = capture_overruns = 0;
-            play_underruns = play_overflows = play_dropped_bytes = i2s_tx_late = 0;
+            play_underruns = play_overflows = play_dropped_bytes = i2s_tx_late = play_received_bytes = 0;
         }
     }
 }
@@ -396,6 +412,7 @@ static esp_err_t uac_output_cb(uint8_t *buf, size_t len, void *ctx)
 {
     last_playback_us = esp_timer_get_time();
     len -= len % FRAME_BYTES;
+    play_received_bytes += len;
     if (xStreamBufferSpacesAvailable(play_buffer) >= len) {
         xStreamBufferSend(play_buffer, buf, len, 0);
     } else {
@@ -438,6 +455,83 @@ const char *uac_serial_number(void)
     return keryx_net_id();
 }
 
+// "xvf get <resid> <cmd> <int32|float|uint8> [count]" / "xvf set <resid> <cmd> <type> <value>...": any XVF3800
+// parameter over I2C, as tools/xvf does over USB (ids in docs/respeaker-flex-xvf3800.md and the XMOS user guide).
+static void xvf_command(const char *args)
+{
+    char op[4], type[8];
+    int resid, id, consumed = 0;
+    if (sscanf(args, "%3s %d %d %7s %n", op, &resid, &id, type, &consumed) != 4 ||
+        (strcmp(type, "int32") != 0 && strcmp(type, "float") != 0 && strcmp(type, "uint8") != 0)) {
+        keryx_console_printf("error usage: xvf get|set <resid> <cmd> <int32|float|uint8> [count | values...]\n");
+        return;
+    }
+    const size_t size = type[0] == 'u' ? 1 : 4;
+    uint8_t buf[64];
+    size_t count = 0;
+    if (strcmp(op, "get") == 0) {
+        count = args[consumed] ? (size_t)atoi(args + consumed) : 1;
+        if (count < 1 || count * size > sizeof(buf)) {
+            keryx_console_printf("error count\n");
+            return;
+        }
+        esp_err_t err = xvf_read(resid, id, buf, count * size);
+        if (err != ESP_OK) {
+            keryx_console_printf("error read: %s\n", esp_err_to_name(err));
+            return;
+        }
+    } else if (strcmp(op, "set") == 0) {
+        const char *p = args + consumed;
+        char *end;
+        while (*p && count * size < sizeof(buf)) {
+            if (type[0] == 'f') {
+                float v = strtof(p, &end);
+                memcpy(buf + count * 4, &v, 4);
+            } else {
+                long v = strtol(p, &end, 0);
+                if (size == 1) {
+                    buf[count] = (uint8_t)v;
+                } else {
+                    int32_t v32 = (int32_t)v;
+                    memcpy(buf + count * 4, &v32, 4);
+                }
+            }
+            if (end == p) {
+                break;
+            }
+            count++;
+            p = end;
+        }
+        esp_err_t err = count ? xvf_write(resid, id, buf, count * size) : ESP_ERR_INVALID_ARG;
+        if (err == ESP_OK) {
+            err = xvf_read(resid, id, buf, count * size);  // what the chip took
+        }
+        if (err != ESP_OK) {
+            keryx_console_printf("error write: %s\n", esp_err_to_name(err));
+            return;
+        }
+    } else {
+        keryx_console_printf("error usage: xvf get|set ...\n");
+        return;
+    }
+    char line[200];
+    int n = snprintf(line, sizeof(line), "ok %d %d =", resid, id);
+    for (size_t i = 0; i < count && n < (int)sizeof(line) - 16; i++) {
+        if (type[0] == 'f') {
+            float v;
+            memcpy(&v, buf + i * 4, 4);
+            n += snprintf(line + n, sizeof(line) - n, " %g", v);
+        } else if (size == 1) {
+            n += snprintf(line + n, sizeof(line) - n, " %u", buf[i]);
+        } else {
+            int32_t v;
+            memcpy(&v, buf + i * 4, 4);
+            n += snprintf(line + n, sizeof(line) - n, " %ld", (long)v);
+        }
+    }
+    keryx_console_printf("%s\n", line);
+}
+
 // Serial port commands beyond keryx_console's own.
 static bool console_command(const char *cmd)
 {
@@ -462,7 +556,14 @@ static bool console_command(const char *cmd)
         sound_thinking(cmd[6] == 't');
         return true;
     }
-    const uint8_t *op = strcmp(cmd, "loop on") == 0 ? OP_L_REFERENCE : strcmp(cmd, "loop off") == 0 ? OP_L_BEAM : NULL;
+    if (strncmp(cmd, "xvf ", 4) == 0) {
+        xvf_command(cmd + 4);
+        return true;
+    }
+    const uint8_t *op = strcmp(cmd, "loop on") == 0    ? OP_L_REFERENCE
+                        : strcmp(cmd, "loop mic") == 0 ? OP_L_MIC
+                        : strcmp(cmd, "loop off") == 0 ? OP_L_BEAM
+                                                       : NULL;
     if (op == NULL) {
         return false;
     }
@@ -471,7 +572,8 @@ static bool console_command(const char *cmd)
     if (err == ESP_OK) {
         err = xvf_read(XVF_AUDIO_MGR_RESID, XVF_AUDIO_MGR_OP_L, now, 2);
     }
-    keryx_console_printf("left capture channel: %s (mux %u, %u)%s\n", op == OP_L_REFERENCE ? "echo reference" :
+    keryx_console_printf("left capture channel: %s (mux %u, %u)%s\n",
+                         op == OP_L_REFERENCE ? "echo reference" : op == OP_L_MIC ? "microphone 0, before AEC" :
                          "processed beam", now[0], now[1], err == ESP_OK && memcmp(now, op, 2) == 0 ? "" : " FAILED");
     return true;
 }
