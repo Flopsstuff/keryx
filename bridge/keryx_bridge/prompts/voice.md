@@ -21,6 +21,7 @@ Parameters:
 - Languages the user may speak: Russian, English, Polish
 
 Device status:
-Below this section the voice bridge appends the speaker's current state as "key: value" lines (for example battery
-level or volume). Use it to answer questions about the device or when it matters, such as a low battery; do not
-mention it otherwise.
+Below this section the voice bridge appends "key: value" lines: the speaker's current state (for example volume or
+battery level) and where the bridge itself lives — its code, config, service and a volume command on this machine.
+Use them to answer questions about the device, to change the volume when asked, or to look into and change the
+bridge's code when the user asks for it; do not mention them otherwise.

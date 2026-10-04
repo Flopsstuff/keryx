@@ -26,17 +26,33 @@ lives in voice.py.
 
 import asyncio
 import json
+import os
+import pathlib
 import secrets
 import socket
+import sys
 import time
 
 import aiohttp
 import numpy as np
 from aiohttp import web
 
-from .voice import STT_RATE, Assistant, apply_gain, dbfs, env, log
+from .voice import CONFIG, PACKAGE, STT_RATE, Assistant, apply_gain, dbfs, env, log
 
 KEEP_S = 120  # seconds of the board's microphone kept for STT
+REPO = PACKAGE.parents[1]
+COMMAND = pathlib.Path(sys.argv[0]).resolve() if pathlib.Path(sys.argv[0]).name == "keryx-bridge" else None
+# where the bridge lives, so that Hermes, on the same machine, can look into it or change it when asked
+BRIDGE_LINES = [
+    f"bridge code: {REPO} (git checkout of the Keryx repository: the bridge is bridge/keryx_bridge, this prompt "
+    "bridge/keryx_bridge/prompts/voice.md, the board's firmware firmware/)",
+    f"bridge config: {CONFIG} (holds API keys: never print or send them)" if CONFIG else "bridge config: none",
+] + ([
+    "bridge service: systemd user unit keryx-bridge; logs: journalctl --user -u keryx-bridge; after changing the "
+    f"code: cd {REPO} && bridge/install.sh (restarts the service, which ends the current conversation)",
+] if os.environ.get("INVOCATION_ID") else []) + ([
+    f"volume control: {COMMAND} volume 0..100|+n|-n",
+] if COMMAND else [])
 
 
 class BoardMic:
@@ -100,13 +116,13 @@ class Link:
             log("board ← listen_stop", conversation)
 
     def status(self):
-        """Lines for the "Device status" section of the voice prompt."""
-        if self.ws is None:
-            return []
+        """Lines for the "Device status" section of the voice prompt: the board's state and where the bridge lives."""
         lines = []
-        if self.volume is not None:
+        if self.ws is None:
+            lines.append("board: not connected")
+        elif self.volume is not None:
             lines.append(f"volume: {self.volume} of 100 (100 is the loudest; 0.5 dB a step)")
-        return lines
+        return lines + BRIDGE_LINES
 
     async def set_volume(self, message):
         """Sends a volume message and returns the volume the board reports back, or None after 2 s."""
