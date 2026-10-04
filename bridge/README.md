@@ -112,7 +112,7 @@ text-to-speech, playback and interruptions.
 
 ## Settings worth knowing
 
-- `XAI_VOICE` — `eve`, `rex`, `ara`, `sal`, `leo`, …
+- `XAI_VOICE` — `eve`, `rex`, `ara`, `sal`, `leo`, … ([all voices](https://docs.x.ai/developers/model-capabilities/audio/text-to-speech#voices))
 - `KERYX_SYSTEM_PROMPT_PATH` — your own voice prompt instead of the bundled
   [`keryx_bridge/prompts/voice.md`](keryx_bridge/prompts/voice.md), which asks Hermes for short spoken answers in
   Russian by default and lists xAI's speech tags (`[laugh]`, `[pause]`, `<whisper>…</whisper>`, `<singing>…</singing>`
