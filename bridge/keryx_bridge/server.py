@@ -41,7 +41,7 @@ from .voice import CONFIG, PACKAGE, STT_RATE, Assistant, apply_gain, dbfs, env, 
 
 KEEP_S = 120  # seconds of the board's microphone kept for STT
 REPO = PACKAGE.parents[1]
-COMMAND = pathlib.Path(sys.argv[0]).resolve() if pathlib.Path(sys.argv[0]).name == "keryx-bridge" else None
+INSTALLED = pathlib.Path(sys.argv[0]).name == "keryx-bridge"  # run as the command, not from source
 # where the bridge lives, so that Hermes, on the same machine, can look into it or change it when asked
 BRIDGE_LINES = [
     f"bridge code: {REPO} (git checkout of the Keryx repository: the bridge is bridge/keryx_bridge, this prompt "
@@ -51,8 +51,8 @@ BRIDGE_LINES = [
     "bridge service: systemd user unit keryx-bridge; logs: journalctl --user -u keryx-bridge; after changing the "
     f"code: cd {REPO} && bridge/install.sh (restarts the service, which ends the current conversation)",
 ] if os.environ.get("INVOCATION_ID") else []) + ([
-    f"volume control: {COMMAND} volume 0..100|+n|-n",
-] if COMMAND else [])
+    f"volume control: {REPO}/set_volume.sh 0..100|+n|-n (no argument prints the current volume)",
+] if INSTALLED else [])
 
 
 class BoardMic:

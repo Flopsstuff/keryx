@@ -102,6 +102,7 @@ or a firewall shows up right there.
 | `keryx-bridge pair` | configure the board on USB, see above |
 | `keryx-bridge status` | what the running bridge knows: board connected, firmware, volume |
 | `keryx-bridge volume 60` / `+10` / `-10` | the board's volume, 0–100 (100 is 0 dB, 0.5 dB a step) |
+| `./set_volume.sh 60` / `+10` / `-10` | the same from the repository's root, printing just the number (no argument: the current volume); the bridge tells Hermes about it, so Hermes can change the volume when asked |
 
 Logs: `journalctl --user -u keryx-bridge -f`. Every line has the wall clock and, inside a conversation, the
 milliseconds since its wake word: speech-to-text, Hermes' tool calls and first token, every sentence sent to
