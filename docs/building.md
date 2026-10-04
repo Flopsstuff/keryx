@@ -72,6 +72,7 @@ log goes there while a program has the port open. Useful commands for developmen
 | `top [s]` | how busy each core was and which tasks took the time |
 | `log <tag\|*> <level>` | change a log level until the next restart |
 | `wake` | act as if the wake word fired (tests the bridge without speaking) |
+| `volume [0-100\|up\|down]`, `mute [on\|off]` | the board's volume and microphone mute (both kept in NVS) |
 | `loop on\|mic\|off` | put the echo reference, or microphone 0 before AEC, on the left capture channel, to measure playback and echo through the USB sound card |
 | `xvf get\|set <resid> <cmd> <type> …` | any XVF3800 parameter over I2C |
 | `bootloader`, `reboot` | restart into the ROM bootloader, or the firmware |

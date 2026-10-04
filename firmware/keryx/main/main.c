@@ -37,6 +37,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs.h"
+#include "nvs_flash.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/stream_buffer.h"
@@ -118,24 +119,50 @@ static volatile int32_t speaker_gain = 32767;
 #define VOLUME_SAVE_MS 2000     // a knob turned quickly writes flash once
 static volatile int volume = VOLUME_DEFAULT;
 static volatile int32_t volume_gain = 32767;  // Q15
-static esp_timer_handle_t volume_save_timer;
+static esp_timer_handle_t settings_save_timer;  // volume and mute go to NVS a moment after they change
+
+// the microphone muted: nothing captured leaves the board (bridge, USB) and the wake word does not run; kept in NVS
+#define MUTE_SAVE_MS 200        // sooner than the volume: a mute that a power cut forgets is no mute
+static volatile bool mic_muted;
 static volatile uint32_t speaker_volume = 100;
 static volatile bool speaker_muted;
 static volatile int64_t last_playback_us;
 
 // interface sounds: requests from other tasks; the playback task keeps the positions
 static volatile bool wake_sound_requested;
+static volatile int mute_sound_requested;  // 1: muted, 2: unmuted
 static volatile bool thinking_requested;
 static volatile int64_t thinking_started_us;
 
-static void volume_save(void *arg)
+static void settings_save(void *arg)
 {
     nvs_handle_t nvs;
     if (nvs_open("keryx", NVS_READWRITE, &nvs) == ESP_OK) {
         nvs_set_u8(nvs, "volume", (uint8_t)volume);
+        nvs_set_u8(nvs, "muted", mic_muted ? 1 : 0);
         nvs_commit(nvs);
         nvs_close(nvs);
     }
+}
+
+static void settings_save_in(int ms)
+{
+    if (settings_save_timer != NULL) {
+        esp_timer_stop(settings_save_timer);
+        esp_timer_start_once(settings_save_timer, ms * 1000LL);
+    }
+}
+
+// Mutes or unmutes the microphone, with a sound when it changes; the bridge hears about it either way.
+static void mute_set(bool on)
+{
+    if (on != mic_muted) {
+        mic_muted = on;
+        mute_sound_requested = on ? 1 : 2;
+        settings_save_in(MUTE_SAVE_MS);
+        keryx_console_printf("microphone %s\n", on ? "muted" : "on");
+    }
+    keryx_link_mute_changed(on);
 }
 
 // 0 is silence; above it, 0.5 dB per step from -50 dB at 0 to 0 dB at 100, as the host's volume control
@@ -144,23 +171,22 @@ static void volume_set(int value)
     value = value < 0 ? 0 : value > 100 ? 100 : value;
     volume = value;
     volume_gain = value == 0 ? 0 : (int32_t)(powf(10.0f, (value / 2.0f - 50.0f) / 20.0f) * 32767.0f);
-    if (volume_save_timer != NULL) {
-        esp_timer_stop(volume_save_timer);
-        esp_timer_start_once(volume_save_timer, VOLUME_SAVE_MS * 1000LL);
-    }
+    settings_save_in(VOLUME_SAVE_MS);
     keryx_link_volume_changed(value);
 }
 
-static void volume_load(void)
+static void settings_load(void)
 {
     nvs_handle_t nvs;
-    uint8_t stored = VOLUME_DEFAULT;
+    uint8_t stored = VOLUME_DEFAULT, muted = 0;
     if (nvs_open("keryx", NVS_READONLY, &nvs) == ESP_OK) {
         nvs_get_u8(nvs, "volume", &stored);
+        nvs_get_u8(nvs, "muted", &muted);
         nvs_close(nvs);
     }
-    const esp_timer_create_args_t timer = {.callback = volume_save, .name = "volume_save"};
-    esp_timer_create(&timer, &volume_save_timer);
+    const esp_timer_create_args_t timer = {.callback = settings_save, .name = "settings_save"};
+    esp_timer_create(&timer, &settings_save_timer);
+    mic_muted = muted != 0;
     volume = stored > 100 ? VOLUME_DEFAULT : stored;
     volume_gain = volume == 0 ? 0 : (int32_t)(powf(10.0f, (volume / 2.0f - 50.0f) / 20.0f) * 32767.0f);
 }
@@ -218,7 +244,8 @@ static void playback_task(void *arg)
     static int16_t in[BLOCK_FRAMES * 2];
     static int32_t out[BLOCK_FRAMES * 2];
     bool playing = false;
-    int wake_pos = KERYX_SOUND_WAKE_LEN;  // < LEN while the chime sounds
+    const int16_t *shot = NULL;  // a one-shot sound: the wake chime or a mute sound
+    int shot_len = 0, shot_pos = 0;
     bool thinking = false;
     int thinking_pos = 0, thinking_fade = 0;  // fade: frames left of a fade-out, 0 when not fading
     for (;;) {
@@ -259,7 +286,14 @@ static void playback_task(void *arg)
 
         if (wake_sound_requested) {
             wake_sound_requested = false;
-            wake_pos = 0;
+            shot = keryx_sound_wake, shot_len = KERYX_SOUND_WAKE_LEN, shot_pos = 0;
+        }
+        int mute_sound = mute_sound_requested;
+        if (mute_sound) {
+            mute_sound_requested = 0;
+            shot = mute_sound == 1 ? keryx_sound_mute_on : keryx_sound_mute_off;
+            shot_len = mute_sound == 1 ? KERYX_SOUND_MUTE_ON_LEN : KERYX_SOUND_MUTE_OFF_LEN;
+            shot_pos = 0;
         }
         int host_peak = 0;
         for (int i = 0; i < BLOCK_FRAMES * 2; i++) {
@@ -290,8 +324,8 @@ static void playback_task(void *arg)
         const int64_t master = volume_gain;
         for (int f = 0; f < BLOCK_FRAMES; f++) {
             int32_t sound = bridge[f];  // the bridge's answer, mono, not under the host's volume
-            if (wake_pos < KERYX_SOUND_WAKE_LEN) {
-                sound += keryx_sound_wake[wake_pos++];
+            if (shot_pos < shot_len) {
+                sound += shot[shot_pos++];
             }
             if (thinking) {
                 int32_t v = thinking_pos < KERYX_SOUND_THINKING_LEN ? keryx_sound_thinking[thinking_pos] : 0;
@@ -334,6 +368,8 @@ static void capture_task(void *arg)
     kww_reset(&model);
 
     const int64_t start = esp_timer_get_time();
+    int64_t listening_since = start;  // the model needs a warm-up after boot and after a mute
+    bool was_muted = false;
     int64_t last_report = start, last_detection = 0, busy_us = 0;
     int blocks = 0, peak_level = 0;
     float peak_score = 0.0f;
@@ -348,8 +384,9 @@ static void capture_task(void *arg)
         last_i2s_read_us = t0;
 
         // the top 16 bits are what goes to the host; the right slot is the ASR output the model learned from
+        const bool muted = mic_muted;
         for (int i = 0; i < BLOCK_FRAMES * 2; i++) {
-            pcm[i] = (int16_t)(raw[i] >> 16);
+            pcm[i] = muted ? 0 : (int16_t)(raw[i] >> 16);
         }
         // whole blocks only, so the channels never swap; the buffer fills up while the host is not recording
         if (xStreamBufferSpacesAvailable(mic_buffer) >= sizeof(pcm)) {
@@ -358,21 +395,36 @@ static void capture_task(void *arg)
             capture_overruns++;
         }
 
-        for (int i = 0; i < BLOCK_FRAMES; i++) {
+        if (muted) {
+            // silence for the bridge's preroll too, and no wake word at all
+            memset(audio16, 0, BLOCK_FRAMES / 3 * sizeof(int16_t));
+            keryx_link_audio_up(audio16, BLOCK_FRAMES / 3);
+            was_muted = true;
+        } else if (was_muted) {
+            // start listening afresh: no state left from before the mute
+            kww_decimate_reset(&decimate);
+            FrontendReset(&frontend.state);
+            kww_reset(&model);
+            listening_since = esp_timer_get_time();
+            was_muted = false;
+        }
+        for (int i = 0; i < BLOCK_FRAMES && !muted; i++) {
             asr[i] = pcm[2 * i + 1];
             int level = asr[i] < 0 ? -asr[i] : asr[i];
             peak_level = level > peak_level ? level : peak_level;
         }
-        size_t n16 = kww_decimate(&decimate, asr, BLOCK_FRAMES, audio16);
-        keryx_link_audio_up(audio16, n16);
-        int nframes = kww_frontend_process(&frontend, audio16, n16, frames, 4);
+        size_t n16 = muted ? 0 : kww_decimate(&decimate, asr, BLOCK_FRAMES, audio16);
+        if (!muted) {
+            keryx_link_audio_up(audio16, n16);
+        }
+        int nframes = muted ? 0 : kww_frontend_process(&frontend, audio16, n16, frames, 4);
         for (int f = 0; f < nframes; f++) {
             float score;
             if (!kww_push(&model, frames[f], &score)) {
                 continue;
             }
             const int64_t now = esp_timer_get_time();
-            if (now - start < WARMUP_MS * 1000LL) {
+            if (now - listening_since < WARMUP_MS * 1000LL) {
                 continue;
             }
             peak_score = score > peak_score ? score : peak_score;
@@ -591,6 +643,17 @@ static bool console_command(const char *cmd)
         }
         return true;
     }
+    if (strcmp(cmd, "mute") == 0 || strcmp(cmd, "mute on") == 0 || strcmp(cmd, "mute off") == 0) {
+        if (cmd[4] != '\0') {
+            mute_set(cmd[6] == 'n');
+        }
+        keryx_console_printf("ok muted=%d\n", mic_muted ? 1 : 0);
+        return true;
+    }
+    if (strcmp(cmd, "wake") == 0 && mic_muted) {
+        keryx_console_printf("error the microphone is muted (mute off)\n");
+        return true;
+    }
     if (strcmp(cmd, "wake") == 0) {
         // as if the wake word fired, for testing the bridge without saying it
         wake_sound_requested = true;
@@ -659,7 +722,7 @@ static void status_xvf(void)
     } else {
         keryx_console_printf("xvf=no_answer i2s=%s\n", i2s ? "running" : "no_clock");
     }
-    keryx_console_printf("volume=%d\n", volume);
+    keryx_console_printf("volume=%d muted=%d\n", volume, mic_muted ? 1 : 0);
 }
 
 // {"type":"volume"} from the bridge
@@ -671,6 +734,11 @@ static void bridge_volume(bool relative, int amount)
 static int get_volume(void)
 {
     return volume;
+}
+
+static bool get_muted(void)
+{
+    return mic_muted;
 }
 
 // {"type":"sound"} from the bridge
@@ -691,6 +759,14 @@ void app_main(void)
     gpio_config_t dout_cfg = {.pin_bit_mask = 1ULL << PIN_I2S_DOUT, .mode = GPIO_MODE_OUTPUT};
     gpio_config(&dout_cfg);
     gpio_set_level(PIN_I2S_DOUT, 0);
+
+    // the volume and, above all, the mute apply from the first captured block
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+    settings_load();
 
     // the model was trained on the ASR channel at this gain; without it everything arrives 12 dB quieter
     esp_err_t err = xvf_control_init(PIN_I2C_SDA, PIN_I2C_SCL);
@@ -727,10 +803,10 @@ void app_main(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Wi-Fi did not start: %s", esp_err_to_name(err));
     }
-    volume_load();  // NVS is up since keryx_net_start()
     keryx_net_status_hook(status_xvf);
     const keryx_link_callbacks_t link_callbacks = {.sound = bridge_sound, .volume = bridge_volume,
-                                                   .get_volume = get_volume};
+                                                   .get_volume = get_volume, .mute = mute_set,
+                                                   .get_muted = get_muted};
     err = keryx_link_start(&link_callbacks);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "bridge link did not start: %s", esp_err_to_name(err));

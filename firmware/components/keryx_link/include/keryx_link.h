@@ -1,12 +1,14 @@
 /*
  * The link to the voice bridge: a WebSocket client that stays connected and speaks protocol v1 (firmware/README.md):
  *
- *   board -> bridge   {"type":"hello",…,"volume":…}, {"type":"wake","score":…,"preroll_ms":…}, {"type":"played"},
- *                     {"type":"volume","value":0..100} (after every change, whoever made it),
+ *   board -> bridge   {"type":"hello",…,"volume":…,"muted":…}, {"type":"wake","score":…,"preroll_ms":…}, {"type":"played"},
+ *                     {"type":"volume","value":0..100}, {"type":"mute","value":bool} (after every change,
+ *                     whoever made it, and when asked),
  *                     binary: PCM16 LE 16 kHz mono (ASR beam) in 20 ms frames, from a wake until listen_stop
  *   bridge -> board   {"type":"ready"}, {"type":"listen_stop"}, {"type":"sound","name":…},
  *                     {"type":"play_start","rate":24000|16000}, binary PCM16 LE mono, {"type":"play_end"},
- *                     {"type":"play_stop"}, {"type":"volume","value":0..100} or {"type":"volume","delta":±n}
+ *                     {"type":"play_stop"}, {"type":"volume","value":0..100} or {"type":"volume","delta":±n},
+ *                     {"type":"mute","value":bool}; either without value asks for the current one
  *
  * The bridge's URL and token come from keryx_net. Wi-Fi power save is off from a wake or a play_start (the bridge may
  * start an answer on its own) until 5 s after the stream and the playback have ended.
@@ -23,6 +25,8 @@ typedef struct {
     void (*sound)(const char *name);  // {"type":"sound"}: "wake", "thinking" or "stop"
     void (*volume)(bool relative, int amount);  // {"type":"volume"}: set to amount, or change by it
     int (*get_volume)(void);  // the current volume, for hello
+    void (*mute)(bool on);    // {"type":"mute","value":…}
+    bool (*get_muted)(void);  // for hello
 } keryx_link_callbacks_t;
 
 // Connects to the bridge, if keryx_net has one; call after keryx_net_start().
@@ -43,6 +47,9 @@ size_t keryx_link_play(int16_t *out, size_t frames);
 
 // The volume changed (from the bridge, the console or a knob): tells the bridge. Never blocks.
 void keryx_link_volume_changed(int volume);
+
+// The microphone was muted or unmuted: stops a running stream at once when muted, and tells the bridge.
+void keryx_link_mute_changed(bool muted);
 
 // One line for the console: connection state, stream and playback counters since the last call.
 void keryx_link_report(char *buf, size_t size);

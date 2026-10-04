@@ -110,6 +110,11 @@ predecessors.
   silence, then 0.5 dB a step up to 0 dB at 100, kept in NVS (saved 2 s after the last change). `volume`,
   `volume <0-100>`, `volume up|down` (±10) on the console; `{"type":"volume",…}` from the bridge, see below. The
   macOS volume of the Keryx sound card still applies to USB audio on top.
+- Microphone mute: while muted nothing captured leaves the board — the USB microphone and the bridge get silence,
+  a running stream stops at once, the wake word does not run (and starts afresh, with its 2.5 s warm-up, when
+  unmuted); playback is not affected. A short falling / rising two-note sound marks the change. Kept in NVS, saved
+  0.2 s after a change. `mute`, `mute on|off` on the console (`wake` is refused while muted), `muted=0|1` in
+  `status`; `{"type":"mute",…}` from the bridge, see below.
 - `top [seconds]` on the console: how busy each core was and which tasks took the time. Idle, connected to Wi-Fi
   at 240 MHz: core 0 ~2 % (Wi-Fi, lwIP), core 1 ~12 % (the wake word 10 %, playback 2 %).
 - More console commands: `wake` acts as if the wake word fired (to test the bridge without saying it), and
@@ -125,7 +130,7 @@ are PCM16 little-endian mono.
 
 | Direction | Message | Meaning |
 |---|---|---|
-| board → bridge | `{"type":"hello","id":…,"token":…,"firmware":…,"volume":…}` | first message; a wrong token: close with 4001 |
+| board → bridge | `{"type":"hello","id":…,"token":…,"firmware":…,"volume":…,"muted":…}` | first message; a wrong token: close with 4001 |
 | bridge → board | `{"type":"ready"}` | accepted |
 | board → bridge | `{"type":"wake","score":0.97,"preroll_ms":500}` | the wake word fired; audio follows |
 | board → bridge | binary, 16 kHz, 20 ms (640 bytes) | the ASR beam: `preroll_ms` from before the wake, then live, until `listen_stop`. A wake during a stream sends `preroll_ms: 0` and the stream goes on unbroken |
@@ -136,6 +141,8 @@ are PCM16 little-endian mono.
 | board → bridge | `{"type":"played"}` | the answer has really finished playing, or was cut |
 | bridge → board | `{"type":"volume","value":60}`, `{"type":"volume","delta":-10}`, `{"type":"volume"}` | set the volume, change it, or ask for it |
 | board → bridge | `{"type":"volume","value":60}` | the volume, after every change whoever made it (bridge, console, later a knob) |
+| bridge → board | `{"type":"mute","value":true}`, `{"type":"mute"}` | mute or unmute the microphone, or ask whether it is muted |
+| board → bridge | `{"type":"mute","value":true}` | the mute state, after every change whoever made it, and when asked; muting also ends a running stream at once |
 
 Measured against a test server, through the echo reference (`loop on`): 24 and 16 kHz answers clean (residual
 −40 dB), `played` 3.06 s after the first byte of a 3 s answer, 90–170 ms after `play_stop`; uplink frames 18 ms

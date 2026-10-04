@@ -88,7 +88,7 @@ id=keryx-a1b2c3 firmware=0d29ff5 internal_free=27655 ...
 wifi=connected ssid=… ip=192.168.1.42 rssi=-55 ch=1
 bridge=ws://192.168.1.10:8765/keryx token=(set)
 xvf=ok version=1.0.4 i2s=running
-volume=100
+volume=100 muted=0
 ok
 ```
 

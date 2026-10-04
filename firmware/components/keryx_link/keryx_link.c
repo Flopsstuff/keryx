@@ -64,6 +64,7 @@ static volatile bool play_ending;    // play_end came: finish what is queued
 static volatile bool play_stop_req;  // play_stop came, or the bridge went away
 static volatile bool played_pending;
 static volatile int volume_pending = -1;  // a volume to report, or -1
+static volatile int mute_pending = -1;    // 0/1 to report, or -1
 
 // playback task only
 static bool play_active;  // primed and playing
@@ -158,6 +159,13 @@ static void handle_message(const char *text)
         } else if (callbacks.get_volume != NULL) {
             keryx_link_volume_changed(callbacks.get_volume());  // {"type":"volume"} alone asks for it
         }
+    } else if (strcmp(type->valuestring, "mute") == 0) {
+        const cJSON *value = cJSON_GetObjectItem(msg, "value");
+        if (callbacks.mute != NULL && cJSON_IsBool(value)) {
+            callbacks.mute(cJSON_IsTrue(value));
+        } else if (callbacks.get_muted != NULL) {
+            keryx_link_mute_changed(callbacks.get_muted());  // {"type":"mute"} alone asks for it
+        }
     } else if (strcmp(type->valuestring, "play_stop") == 0) {
         if (play_open) {
             play_stop_req = true;
@@ -249,6 +257,9 @@ static void send_hello(void)
     if (callbacks.get_volume != NULL) {
         cJSON_AddNumberToObject(msg, "volume", callbacks.get_volume());
     }
+    if (callbacks.get_muted != NULL) {
+        cJSON_AddBoolToObject(msg, "muted", callbacks.get_muted());
+    }
     send_json(msg);
 }
 
@@ -320,6 +331,16 @@ static void link_task(void *arg)
                     cJSON *msg = cJSON_CreateObject();
                     cJSON_AddStringToObject(msg, "type", "volume");
                     cJSON_AddNumberToObject(msg, "value", volume);
+                    send_json(msg);
+                }
+            }
+            int mute = mute_pending;
+            if (mute >= 0) {
+                mute_pending = -1;
+                if (state == LINK_READY) {
+                    cJSON *msg = cJSON_CreateObject();
+                    cJSON_AddStringToObject(msg, "type", "mute");
+                    cJSON_AddBoolToObject(msg, "value", mute != 0);
                     send_json(msg);
                 }
             }
@@ -432,6 +453,17 @@ void keryx_link_audio_up(const int16_t *samples, size_t count)
 void keryx_link_volume_changed(int volume)
 {
     volume_pending = volume;
+    if (link_task_handle != NULL) {
+        xTaskNotifyGive(link_task_handle);
+    }
+}
+
+void keryx_link_mute_changed(bool muted)
+{
+    if (muted) {
+        streaming = false;  // nothing more leaves the board; the bridge ends the conversation
+    }
+    mute_pending = muted;
     if (link_task_handle != NULL) {
         xTaskNotifyGive(link_task_handle);
     }
