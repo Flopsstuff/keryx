@@ -659,14 +659,17 @@ static bool console_command(const char *cmd)
         wake_sound_requested = true;
         keryx_link_wake(1.0f);
         keryx_console_printf("wake score=1.000 (console)\n");
+        keryx_console_printf("ok\n");
         return true;
     }
     if (strcmp(cmd, "sound wake") == 0) {
         wake_sound_requested = true;
+        keryx_console_printf("ok %s\n", cmd);
         return true;
     }
     if (strcmp(cmd, "sound thinking") == 0 || strcmp(cmd, "sound stop") == 0) {
         sound_thinking(cmd[6] == 't');
+        keryx_console_printf("ok %s\n", cmd);
         return true;
     }
     if (strcmp(cmd, "volume") == 0 || strncmp(cmd, "volume ", 7) == 0) {
