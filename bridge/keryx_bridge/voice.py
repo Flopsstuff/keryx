@@ -4,7 +4,9 @@ A wake word opens a conversation: one xAI streaming speech-to-text session (Smar
 every utterance goes to Hermes' OpenAI-compatible /v1/chat/completions (streamed), and every finished sentence of
 the reply goes to xAI text-to-speech over a WebSocket that stays open and on to the speaker. The conversation goes
 on after an answer, so the next request needs no wake word, and ends after --follow-up seconds of silence. Talking
-over an answer (or saying the wake word) stops it. The microphone also hears Keryx itself: a transcribed word is
+over an answer (or saying the wake word) stops it. Hermes keeps the history in one of its sessions
+(X-Hermes-Session-Id): a wake word within --session-timeout of the last exchange continues it, a later one starts a
+new session. The microphone also hears Keryx itself: a transcribed word is
 taken for that echo when its timestamp falls into a moment the speaker was playing and Keryx said the same word up
 to its ending.
 
@@ -74,6 +76,20 @@ def env(name, default=None):
         raise SystemExit(f"{name} is not set: put it into {CONFIG or '~/.config/keryx/bridge.env'} "
                          "(see bridge/bridge.env.example)")
     return default
+
+
+def duration(text):
+    """Seconds from "90s", "30m", "2h" or a bare number of minutes."""
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)([smh]?)", str(text).strip())
+    if not match:
+        raise ValueError(f"bad duration {text!r}: use 90s, 30m, 2h or a number of minutes")
+    return float(match[1]) * {"s": 1, "m": 60, "h": 3600, "": 60}[match[2]]
+
+
+def state_file():
+    """Where the bridge remembers its Hermes session across restarts."""
+    state_home = pathlib.Path(os.environ.get("XDG_STATE_HOME") or pathlib.Path.home() / ".local" / "state")
+    return state_home / "keryx" / "session.json"
 
 
 def config_path(value):
@@ -183,9 +199,9 @@ def add_arguments(parser, save_dir):
                         help="do not ask the board for its quiet \"thinking\" loop while Hermes works")
     parser.add_argument("--no-barge-in", dest="barge_in", action="store_false",
                         help="do not stop an answer when the user talks or says the wake word")
-    parser.add_argument("--follow-up", type=float, default=8.0,
+    parser.add_argument("--follow-up", type=float, default=float(env("KERYX_FOLLOW_UP", "7")),
                         help="seconds to wait for the next request after an answer before the conversation ends "
-                             "(default 8; 0 ends it after one answer)")
+                             "(default KERYX_FOLLOW_UP, else 7; 0 ends it after one answer)")
     parser.add_argument("--no-echo-filter", dest="echo_filter", action="store_false",
                         help="keep words that the microphone heard from Keryx's own answer")
     parser.add_argument("--echo-tail", type=float, default=0.8,
@@ -207,7 +223,13 @@ def add_arguments(parser, save_dir):
                         help="give up when nothing is heard this many seconds after the wake (default 6)")
     parser.add_argument("--hermes-timeout", type=float, default=120.0,
                         help="seconds Hermes may stay silent mid-answer (default 120)")
-    parser.add_argument("--history", type=int, default=6, help="exchanges kept as context (default 6)")
+    parser.add_argument("--session-timeout", type=duration, default=env("KERYX_SESSION_TIMEOUT", "1h"),
+                        help="a wake word this long after the last exchange starts a new Hermes session; sooner, it "
+                             "continues the last one (90s, 30m, 2h; default KERYX_SESSION_TIMEOUT, else 1h; "
+                             "0: a new session on every wake word)")
+    parser.add_argument("--session-key", default=env("KERYX_HERMES_SESSION_KEY", "keryx"),
+                        help="X-Hermes-Session-Key: the scope of Hermes' long-term memory for the voice channel "
+                             "(default KERYX_HERMES_SESSION_KEY, else keryx)")
     parser.add_argument("--system", help="system prompt for the voice channel (default KERYX_SYSTEM_PROMPT, "
                                           "else the file KERYX_SYSTEM_PROMPT_PATH, else the bundled one)")
     parser.add_argument("--meter", type=float, default=2.0,
@@ -526,7 +548,9 @@ class Assistant:
         self.xai = {"Authorization": f"Bearer {env('XAI_API_KEY')}"}
         self.hermes = None if args.echo else {"Authorization": f"Bearer {env('HERMES_API_KEY')}"}
         self.model = None
-        self.history = []
+        # the Hermes session: Hermes keeps its history; we only remember which one and when it was last used
+        self.session_id, self.last_active = self.load_session()
+        self.notes = []  # what Hermes should know before the next request: interruptions, things said on our own
         self.tts = None
         self.tts_lock = asyncio.Lock()
         self.conversation = None
@@ -573,6 +597,40 @@ class Assistant:
                 tts = "open" if self.tts is not None and not self.tts.closed else "closed"
                 log(f"idle: {status()}, TTS socket {tts}, waiting for a wake word")
 
+    # ------------------------------------------------------------ the Hermes session
+
+    def load_session(self):
+        try:
+            state = json.loads(state_file().read_text())
+            return state["id"], float(state["last_active"])
+        except (OSError, ValueError, KeyError):
+            return None, 0.0
+
+    def hermes_session(self, conv=None):
+        """The session for the next request: the last one, unless it has been idle longer than --session-timeout."""
+        idle = time.time() - self.last_active
+        if self.session_id is None or idle > self.args.session_timeout:
+            if self.session_id is not None:
+                log(f"Hermes session {self.session_id} idle for {idle / 60:.0f} min: starting a new one", conv)
+            self.session_id = f"keryx-{time.strftime('%Y%m%d-%H%M%S')}"
+            self.notes.clear()
+        self.touch()
+        return self.session_id
+
+    def touch(self):
+        self.last_active = time.time()
+        try:
+            path = state_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"id": self.session_id, "last_active": self.last_active}) + "\n")
+        except OSError as e:
+            log(f"cannot save the Hermes session to {state_file()}: {e}")
+
+    def said_on_own(self, text):
+        """say.sh: the session goes on, and Hermes hears about it with the next request."""
+        self.hermes_session()
+        self.notes.append(f"[Keryx said aloud on its own: «{text}»]")
+
     # ------------------------------------------------------------ wake events
 
     def on_wake(self, score, frame):
@@ -588,14 +646,13 @@ class Assistant:
     async def answer(self, text, exchange, conv):
         conv.state = "thinking"
         log(f"--- exchange {exchange.number}", conv)
-        self.history.append({"role": "user", "content": text})
         reply, spoken, sentences = "", "", 0
         receiver = None
         try:
             tts = await self.tts_socket(conv)
             self.speaker.first_sound = None
             receiver = asyncio.create_task(self.play(tts, exchange, conv))
-            async for delta in self.hermes_stream(exchange, conv):
+            async for delta in self.hermes_stream(text, exchange, conv):
                 reply += delta
                 pending = reply[len(spoken):]
                 ends = list(SENTENCE_END.finditer(pending))
@@ -618,17 +675,17 @@ class Assistant:
                 await receiver
             else:
                 receiver.cancel()
-            self.history.append({"role": "assistant", "content": reply})
         except asyncio.CancelledError:
             if receiver is not None:
                 receiver.cancel()
             dropped = self.speaker.clear()
             log(f"answer stopped while {conv.state}; dropped {dropped:.1f} s of queued audio", conv)
             await self.stop_thinking(conv)
+            # Hermes keeps the whole answer in its session; tell it with the next request how much was heard
             if spoken.strip():
-                self.history.append({"role": "assistant", "content": spoken.strip() + " … (перебили)"})
+                self.notes.append(f"[The user interrupted Keryx; only this much was said aloud: «{spoken.strip()}»]")
             else:
-                self.history.pop()  # the request never got an answer; the next one replaces it
+                self.notes.append("[The user interrupted before Keryx answered the previous request]")
             if sentences and self.tts is not None:
                 # throw away what is still being synthesized; reconnect now, while the user is talking
                 await self.tts.close()
@@ -640,12 +697,10 @@ class Assistant:
             traceback.print_exc()
             if receiver is not None:
                 receiver.cancel()
-            if self.history and self.history[-1]["role"] == "user":
-                self.history.pop()
         finally:
             if getattr(exchange, "keepalive", None):
                 exchange.keepalive.cancel()
-            self.history = self.history[-2 * self.args.history:]
+            self.touch()
             if conv.state != "over":
                 conv.state = "listening"
             self.report(exchange, conv)
@@ -670,9 +725,9 @@ class Assistant:
         exchange.sentences += 1
         return 1
 
-    async def hermes_stream(self, exchange, conv):
+    async def hermes_stream(self, text, exchange, conv):
         if self.args.echo:
-            for word in f"Ты сказал: {self.history[-1]['content']}".split(" "):
+            for word in f"Ты сказал: {text}".split(" "):
                 exchange.mark("first_token")
                 yield word + " "
             return
@@ -680,18 +735,26 @@ class Assistant:
         status = self.board.status() if hasattr(self.board, "status") else []
         if status:
             system += "\n" + "\n".join(status)  # the prompt ends with its "Device status" section
-        messages = [{"role": "system", "content": system}] + self.history
+        session = self.hermes_session(conv)
+        # only the new request: Hermes takes the history from the session
+        content = "\n".join(self.notes + [text])
+        self.notes.clear()
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": content}]
         body = {"model": self.model, "stream": True, "messages": messages}
+        headers = {**self.hermes, "X-Hermes-Session-Id": session, "X-Hermes-Session-Key": self.args.session_key}
         if self.args.thinking_sound:
             # the board loops a quiet "thinking" sound until we play something louder than -54 dBFS, or for 60 s
             await self.board.sound("thinking", conv)
             exchange.keepalive = asyncio.create_task(self.keep_thinking(exchange, conv))
-        log(f"Hermes ← POST /chat/completions: {len(messages)} messages, "
-            f"{sum(len(m['content']) for m in messages)} chars", conv)
+        log(f"Hermes ← POST /chat/completions: session {session}, {len(content)} chars", conv)
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=self.args.hermes_timeout)
-        async with self.session.post(f"{self.args.hermes}/chat/completions", json=body, headers=self.hermes,
+        async with self.session.post(f"{self.args.hermes}/chat/completions", json=body, headers=headers,
                                      timeout=timeout) as resp:
             log(f"Hermes → HTTP {resp.status} {resp.headers.get('Content-Type', '')}", conv)
+            if (answered := resp.headers.get("X-Hermes-Session-Id")) and answered != session:
+                # Hermes moves a session on when it compresses it; follow it there
+                log(f"Hermes session {session} continues as {answered}", conv)
+                self.session_id = answered
             if resp.status != 200:
                 raise RuntimeError(f"Hermes: HTTP {resp.status} {(await resp.text())[:500]}")
             event, chunks, chars, waiting = None, 0, 0, time.monotonic()

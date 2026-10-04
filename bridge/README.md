@@ -117,15 +117,22 @@ text-to-speech, playback and interruptions.
   [`keryx_bridge/prompts/voice.md`](keryx_bridge/prompts/voice.md), which asks Hermes for short spoken answers in
   Russian by default. Hermes layers it on top of its own prompt; the bridge appends a "Device status" section with
   the board's volume.
-- `keryx-bridge run` options, also usable in the service's `ExecStart`: `--follow-up` (seconds of silence that end a
-  conversation, 8), `--languages` (what speech-to-text may report, `ru,en,pl`), `--gain`, `--no-barge-in`,
+- `KERYX_FOLLOW_UP` — seconds of silence after an answer that end a conversation (7); after that it takes the wake
+  word again.
+- `KERYX_SESSION_TIMEOUT` — how long Hermes remembers the conversation (`1h`). Hermes keeps the history in one of
+  its sessions (`X-Hermes-Session-Id` `keryx-<date>-<time>`, memory scope `X-Hermes-Session-Key: keryx`): a wake
+  word within this time of the last exchange continues it, a later one starts a new session. The bridge remembers
+  the session in `~/.local/state/keryx/session.json`, so a restart does not lose it.
+- `keryx-bridge run` options, also usable in the service's `ExecStart`: `--follow-up`, `--session-timeout`,
+  `--languages` (what speech-to-text may report, `ru,en,pl`), `--gain`, `--no-barge-in`,
   `--echo` (no Hermes: says back what it heard, for testing the audio path).
 
 ## HTTP control
 
 On the bridge's port, with `Authorization: Bearer <KERYX_BRIDGE_TOKEN>`:
 
-- `GET /keryx/status` — `{"connected": …, "id": …, "firmware": …, "volume": …, "conversation": …}`
+- `GET /keryx/status` — `{"connected": …, "id": …, "firmware": …, "volume": …, "conversation": …,
+  "hermes_session": …, "hermes_idle_s": …}`
 - `POST /keryx/volume` with `{"value": 0..100}` or `{"delta": n}` — answers with the volume the board reports back
 - `POST /keryx/say` with `{"text": "…"}` — says it on the board and answers `{"said_s": …}` once it has been played
 - `POST /keryx/mute` with `{"value": true|false}` and optionally `{"for": seconds}` — mutes or unmutes the

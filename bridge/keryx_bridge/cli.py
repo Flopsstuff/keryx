@@ -14,7 +14,6 @@ import argparse
 import asyncio
 import getpass
 import json
-import re
 import socket
 import sys
 import time
@@ -23,7 +22,7 @@ import aiohttp
 
 from . import __version__
 from .server import add_server_arguments, serve
-from .voice import CONFIG, add_arguments, env, finish_arguments, system_prompt
+from .voice import CONFIG, add_arguments, duration, env, finish_arguments, system_prompt
 
 
 def run(argv):
@@ -227,10 +226,10 @@ def main():
     elif command in ("mute", "unmute") and len(rest) <= (1 if command == "mute" else 0):
         body = {"value": command == "mute"}
         if rest:
-            match = re.fullmatch(r"(\d+(?:\.\d+)?)([smh]?)", rest[0])
-            if not match:
-                sys.exit(f"bad duration {rest[0]!r}: use 90s, 30m, 2h or a number of minutes")
-            body["for"] = float(match[1]) * {"s": 1, "m": 60, "h": 3600, "": 60}[match[2]]
+            try:
+                body["for"] = duration(rest[0])
+            except ValueError as e:
+                sys.exit(str(e))
         status, answer = asyncio.run(control("POST", "mute", body))
         print(json.dumps(answer, ensure_ascii=False))
         sys.exit(0 if status == 200 else 1)

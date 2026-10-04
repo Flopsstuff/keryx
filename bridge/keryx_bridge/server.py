@@ -331,7 +331,9 @@ class Bridge:
         return web.json_response({"connected": self.link.ws is not None, "id": self.link.id,
                                   "firmware": self.link.firmware, "volume": self.link.volume,
                                   "muted": self.link.muted, "muted_until": self.link.muted_until,
-                                  "conversation": not self.assistant.idle()})
+                                  "conversation": not self.assistant.idle(),
+                                  "hermes_session": self.assistant.session_id,
+                                  "hermes_idle_s": round(time.time() - self.assistant.last_active)})
 
     async def http_volume(self, request):
         """POST {"value": 0..100} or {"delta": ±n}; answers with the volume the board then reports."""
@@ -437,8 +439,8 @@ class Bridge:
                         raise RuntimeError(f"TTS: {event.get('message')}")
             await self.speaker.end()
             await self.speaker.drain()
-            # Hermes keeps the voice history: a follow-up like "what did you say?" then has its answer
-            self.assistant.history.append({"role": "assistant", "content": text})
+            # Hermes hears about it with the next request: a follow-up like "what did you say?" then has its answer
+            self.assistant.said_on_own(text)
             log(f"say: done, {audio / 2 / self.speaker.rate:.1f} s", conv)
             return audio / 2 / self.speaker.rate
 

@@ -125,7 +125,12 @@ idle it sleeps (DTIM 3), so the first message to an idle board can take up to ~3
 logging) behind three adapters — a microphone, a speaker and a board — so `server.py` (WebSocket board) and
 `tools/converse.py` (USB board) share it. Behaviours that span several functions and are easy to break:
 - one xAI STT session (Smart Turn) per conversation, open from the wake word until `--follow-up` seconds of
-  silence, so follow-ups need no wake word and talking over an answer interrupts it;
+  silence (`KERYX_FOLLOW_UP`, 7), so follow-ups need no wake word and talking over an answer interrupts it;
+- the bridge keeps no chat history: each request carries only the new utterance with `X-Hermes-Session-Id`, and
+  Hermes loads the history from that session. The session outlives conversations — a wake word within
+  `--session-timeout` (`KERYX_SESSION_TIMEOUT`, 1h) of the last exchange continues it — and survives restarts
+  (`~/.local/state/keryx/session.json`). Interruptions and `say.sh` reach Hermes as bracketed notes before the next
+  request (`Assistant.notes`), since Hermes stores whole answers;
 - `text.done` is sent to xAI TTS after every sentence: xAI otherwise holds back each sentence's end until more text
   arrives, which leaves the speaker silent mid-word while Hermes is still writing;
 - the echo filter matches STT word timestamps against the intervals the speaker was playing (in microphone
