@@ -163,7 +163,7 @@ def pair(argv):
         sys.exit("the board does not answer `status`: is it running the keryx firmware?")
     if any("xvf=no_answer" in line or "i2s=no_clock" in line for line in lines):
         print("warning: the XVF3800 does not run its I2S firmware, so the board hears nothing and plays nothing;\n"
-              "         flash respeaker_flex_i2s_c48k2ch onto the reSpeaker Flex first (see firmware/README.md)")
+              "         flash respeaker_flex_i2s_c48k2ch onto the reSpeaker Flex first (see docs/flashing.md, step 1)")
 
     def setting(name, value, shown):
         good, lines = board.command(f"set {name} {value}", show=False)

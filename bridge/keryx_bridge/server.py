@@ -3,7 +3,7 @@
 The board connects to ws://<host>:8765/keryx and keeps the connection (protocol v1, agreed with the firmware):
 
 board → bridge
-  {"type":"hello","id":"keryx-4651b4","token":"…","firmware":"…"}   first message; a wrong token closes with 4001
+  {"type":"hello","id":"keryx-a1b2c3","token":"…","firmware":"…"}   first message; a wrong token closes with 4001
   {"type":"wake","score":0.97,"preroll_ms":500}   then 16 kHz mono PCM16 frames of 20 ms: preroll_ms of audio from
                                                    before the wake, then live, until listen_stop; a wake during a
                                                    running stream comes with preroll_ms 0 and no extra audio

@@ -10,7 +10,7 @@ It runs anywhere on the board's network: next to Hermes (a Raspberry Pi, say) or
 
 ## What you need
 
-- The board with the `keryx` firmware (see [../firmware](../firmware/README.md)).
+- The board with the `keryx` firmware (see [../docs/flashing.md](../docs/flashing.md)).
 - An [xAI API key](https://console.x.ai). Speech costs about $0.004 per exchange, nine tenths of it text-to-speech
   (see [../docs/speech-providers.md](../docs/speech-providers.md)).
 - Hermes with its API server on: `API_SERVER_ENABLED=true` and an `API_SERVER_KEY` in `~/.hermes/.env`, and
@@ -64,7 +64,7 @@ it runs on any USB power supply and keeps its settings across power cycles and f
 ### On the bridge machine (the default)
 
 The quickest way: do everything on the machine that runs the bridge, usually the one with Hermes. Flash the board
-there (see [../firmware](../firmware/README.md)), install the bridge as above, keep the board on USB and run:
+there (see [../docs/flashing.md](../docs/flashing.md)), install the bridge as above, keep the board on USB and run:
 
 ```bash
 bridge/.venv/bin/keryx-bridge pair
