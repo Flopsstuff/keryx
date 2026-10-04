@@ -300,6 +300,7 @@ class Bridge:
         await ws.send_str(json.dumps({"type": "ready"}))
         log(f"board {self.link.id} ready: firmware {hello.get('firmware', '?')!r}, volume {self.link.volume}, "
             f"muted {self.link.muted}, from {peer}")
+        self.resume_timed_mute()
         try:
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.BINARY:
@@ -382,9 +383,21 @@ class Bridge:
 
     async def unmute_after(self, seconds):
         await asyncio.sleep(seconds)
-        self.unmute_task, self.link.muted_until = None, None
+        self.unmute_task = None
         log("timed mute over: unmuting")
-        await self.link.set_mute(False)
+        if await self.link.set_mute(False) is None:
+            log("the board did not take the unmute: retrying when it connects again")
+            return  # muted_until stays, resume_timed_mute picks it up
+        self.link.muted_until = None
+
+    def resume_timed_mute(self):
+        """After the board connects: a timed mute still running or run out while it was away is finished here."""
+        if not self.link.muted:
+            if self.unmute_task is not None:
+                self.unmute_task.cancel()
+            self.unmute_task, self.link.muted_until = None, None  # unmuted some other way meanwhile
+        elif self.link.muted_until is not None and self.unmute_task is None:
+            self.unmute_task = asyncio.create_task(self.unmute_after(max(0.0, self.link.muted_until - time.time())))
 
     async def http_say(self, request):
         """POST {"text": "…"}: says it on the board; answers once the board has played it."""
