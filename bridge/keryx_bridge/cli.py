@@ -5,6 +5,7 @@
   keryx-bridge pair [options]    give the board on USB the Wi-Fi, this bridge's address and its token
   keryx-bridge status            what a running bridge on this machine knows about the board
   keryx-bridge volume 60|+10|-10 set the board's volume through a running bridge
+  keryx-bridge say TEXT          say something on the board through a running bridge (TEXT or stdin)
 """
 
 import argparse
@@ -82,14 +83,14 @@ async def check_services():
     return ok
 
 
-async def control(method, path, body=None):
+async def control(method, path, body=None, timeout=10):
     port = int(env("KERYX_BRIDGE_PORT", "8765"))
     url = f"http://127.0.0.1:{port}/keryx/{path}"
     headers = {"Authorization": f"Bearer {env('KERYX_BRIDGE_TOKEN')}"}
     async with aiohttp.ClientSession() as session:
         try:
             async with session.request(method, url, json=body, headers=headers,
-                                       timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                                       timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
                 return resp.status, await resp.json()
         except aiohttp.ClientError as e:
             raise SystemExit(f"no bridge at {url}: {e!r}")
@@ -218,6 +219,13 @@ def main():
         value = rest[0]
         body = {"delta": int(value)} if value[0] in "+-" else {"value": int(value)}
         status, answer = asyncio.run(control("POST", "volume", body))
+        print(json.dumps(answer, ensure_ascii=False))
+        sys.exit(0 if status == 200 else 1)
+    elif command == "say":
+        text = " ".join(rest).strip() or sys.stdin.read().strip()
+        if not text:
+            sys.exit("nothing to say: keryx-bridge say TEXT, or the text on stdin")
+        status, answer = asyncio.run(control("POST", "say", {"text": text}, timeout=200))
         print(json.dumps(answer, ensure_ascii=False))
         sys.exit(0 if status == 200 else 1)
     else:

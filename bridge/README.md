@@ -103,6 +103,7 @@ or a firewall shows up right there.
 | `keryx-bridge status` | what the running bridge knows: board connected, firmware, volume |
 | `keryx-bridge volume 60` / `+10` / `-10` | the board's volume, 0–100 (100 is 0 dB, 0.5 dB a step) |
 | `./set_volume.sh 60` / `+10` / `-10` | the same from the repository's root, printing just the number (no argument: the current volume); the bridge tells Hermes about it, so Hermes can change the volume when asked |
+| `keryx-bridge say TEXT`, `./say.sh "TEXT"` | say something on the board now (after an answer in progress); the bridge tells Hermes about `say.sh`, so Hermes can speak on its own: reminders, timers |
 
 Logs: `journalctl --user -u keryx-bridge -f`. Every line has the wall clock and, inside a conversation, the
 milliseconds since its wake word: speech-to-text, Hermes' tool calls and first token, every sentence sent to
@@ -125,6 +126,7 @@ On the bridge's port, with `Authorization: Bearer <KERYX_BRIDGE_TOKEN>`:
 
 - `GET /keryx/status` — `{"connected": …, "id": …, "firmware": …, "volume": …, "conversation": …}`
 - `POST /keryx/volume` with `{"value": 0..100}` or `{"delta": n}` — answers with the volume the board reports back
+- `POST /keryx/say` with `{"text": "…"}` — says it on the board and answers `{"said_s": …}` once it has been played
 
 Hermes can use these from its terminal tool, for example to change the volume when asked.
 

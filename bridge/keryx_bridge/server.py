@@ -17,14 +17,16 @@ bridge → board
   {"type":"play_stop"}                             cut the answer now
   {"type":"volume","value":0..100} or "delta":±n   set the board's volume (100 = 0 dB, 0.5 dB a step)
 
-HTTP control on the same port, with the same token as `Authorization: Bearer …`: GET <path>/status, and
-POST <path>/volume with {"value": 0..100} or {"delta": n}, which answers with the volume the board reports back.
+HTTP control on the same port, with the same token as `Authorization: Bearer …`: GET <path>/status;
+POST <path>/volume with {"value": 0..100} or {"delta": n}, which answers with the volume the board reports back;
+POST <path>/say with {"text": "…"}, which says it on the board and answers once it has been played.
 
 The bridge checks the token against the KERYX_BRIDGE_TOKEN setting. Everything else (Hermes, xAI, the options)
 lives in voice.py.
 """
 
 import asyncio
+import base64
 import json
 import os
 import pathlib
@@ -37,7 +39,7 @@ import aiohttp
 import numpy as np
 from aiohttp import web
 
-from .voice import CONFIG, PACKAGE, STT_RATE, Assistant, apply_gain, dbfs, env, log
+from .voice import CONFIG, PACKAGE, STT_RATE, Assistant, apply_gain, dbfs, env, log, speakable
 
 KEEP_S = 120  # seconds of the board's microphone kept for STT
 REPO = PACKAGE.parents[1]
@@ -52,6 +54,8 @@ BRIDGE_LINES = [
     f"code: cd {REPO} && bridge/install.sh (restarts the service, which ends the current conversation)",
 ] if os.environ.get("INVOCATION_ID") else []) + ([
     f"volume control: {REPO}/set_volume.sh 0..100|+n|-n (no argument prints the current volume)",
+    f'speak on your own: {REPO}/say.sh "text" (says it on the speaker, after any answer in progress; for reminders, '
+    "timers or anything the user asked to be told later)",
 ] if INSTALLED else [])
 
 
@@ -226,6 +230,7 @@ class Bridge:
         self.link = Link()
         self.speaker = BoardSpeaker(self.link, self.mic, args.tts_rate, 10 ** (args.gain / 20))
         self.assistant = Assistant(args, self.mic, self.speaker, self.link, session)
+        self.say_lock = asyncio.Lock()
 
     def status(self):
         if self.link.ws is None:
@@ -315,6 +320,64 @@ class Bridge:
             return web.json_response({"error": "the board did not answer"}, status=504)
         return web.json_response({"volume": volume})
 
+    async def http_say(self, request):
+        """POST {"text": "…"}: says it on the board; answers once the board has played it."""
+        if not self.authorized(request):
+            return web.json_response({"error": "bad token"}, status=401)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        text = str(body.get("text", "")).strip() if isinstance(body, dict) else ""
+        if not text or len(text) > 2000:
+            return web.json_response({"error": 'send {"text": "…"}, up to 2000 characters'}, status=400)
+        if self.link.ws is None:
+            return web.json_response({"error": "no board connected"}, status=503)
+        try:
+            seconds = await asyncio.wait_for(self.say(text), 180)
+        except (RuntimeError, aiohttp.ClientError, asyncio.TimeoutError) as e:
+            log(f"say: failed: {e!r}")
+            return web.json_response({"error": f"could not say it: {e}"}, status=502)
+        return web.json_response({"said_s": round(seconds, 1)})
+
+    async def say(self, text):
+        """Speaks text on the board outside the conversation's own answers; returns seconds of speech."""
+        async with self.say_lock:
+            for _ in range(600):  # let an answer in progress finish first, up to 2 minutes
+                conv = None if self.assistant.idle() else self.assistant.conversation
+                if self.speaker.started is None and not (conv and conv.answering):
+                    break
+                await asyncio.sleep(0.2)
+            conv = None if self.assistant.idle() else self.assistant.conversation
+            if conv is not None:
+                conv.keryx_said(text)  # so that the microphone hearing it is not taken for the user
+            log(f"say: {text!r}", conv)
+            args = self.assistant.args
+            url = (f"wss://api.x.ai/v1/tts?language=auto&voice={args.voice}&codec=pcm&sample_rate={self.speaker.rate}")
+            audio = 0
+            self.speaker.first_sound = None
+            async with self.assistant.session.ws_connect(url, headers=self.assistant.xai) as tts:
+                await tts.send_str(json.dumps({"type": "text.delta", "delta": speakable(text)}))
+                await tts.send_str(json.dumps({"type": "text.done"}))
+                async for msg in tts:
+                    if msg.type != aiohttp.WSMsgType.TEXT:
+                        raise RuntimeError(f"TTS socket ended ({msg.type.name})")
+                    event = json.loads(msg.data)
+                    if event["type"] == "audio.delta":
+                        pcm = base64.b64decode(event["delta"])
+                        audio += len(pcm)
+                        await self.speaker.feed(pcm)
+                    elif event["type"] == "audio.done":
+                        break
+                    elif event["type"] == "error":
+                        raise RuntimeError(f"TTS: {event.get('message')}")
+            await self.speaker.end()
+            await self.speaker.drain()
+            # Hermes keeps the voice history: a follow-up like "what did you say?" then has its answer
+            self.assistant.history.append({"role": "assistant", "content": text})
+            log(f"say: done, {audio / 2 / self.speaker.rate:.1f} s", conv)
+            return audio / 2 / self.speaker.rate
+
     def on_message(self, data):
         try:
             message = json.loads(data)
@@ -357,6 +420,7 @@ async def serve(args):
         app.router.add_get(args.path, bridge.handle)
         app.router.add_get(args.path + "/status", bridge.http_status)
         app.router.add_post(args.path + "/volume", bridge.http_volume)
+        app.router.add_post(args.path + "/say", bridge.http_say)
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         await web.TCPSite(runner, args.host, args.port).start()
