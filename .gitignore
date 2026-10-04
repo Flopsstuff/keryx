@@ -35,3 +35,6 @@ wakeword/data/
 
 # working notes between sessions, not part of the repository
 HANDOFF.md
+
+# Python packaging
+*.egg-info/

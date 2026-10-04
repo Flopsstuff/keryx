@@ -1,4 +1,4 @@
-"""The voice pipeline shared by converse.py (the board over USB) and bridge.py (the board over WebSocket).
+"""The voice pipeline shared by the bridge (the board over WebSocket) and tools/converse.py (the board over USB).
 
 A wake word opens a conversation: one xAI streaming speech-to-text session (Smart Turn) runs for the whole of it,
 every utterance goes to Hermes' OpenAI-compatible /v1/chat/completions (streamed), and every finished sentence of
@@ -16,10 +16,8 @@ The front-ends supply three adapters:
   `queued()` (seconds not yet played);
 - a board: `sound(name, conversation)` for the board's own sounds and `listen_stop(conversation)`.
 
-Settings come from the environment or the repository's .env: XAI_API_KEY and HERMES_API_KEY (Hermes'
-API_SERVER_KEY) are required; HERMES_URL (default http://rpi5:8642/v1) and XAI_VOICE (default eve) are optional.
-The system prompt, layered by Hermes on top of its own, is --system, else KERYX_SYSTEM_PROMPT (text; `\\n` for line
-breaks), else the file KERYX_SYSTEM_PROMPT_PATH (relative to the repository), else the built-in SYSTEM below.
+Settings (see bridge.env.example) come from the process environment, then from the first config file found:
+$KERYX_CONFIG, ~/.config/keryx/bridge.env, or the repository's .env in a development checkout.
 """
 
 import asyncio
@@ -35,44 +33,66 @@ import wave
 import aiohttp
 import numpy as np
 
-REPO = pathlib.Path(__file__).resolve().parent.parent
+PACKAGE = pathlib.Path(__file__).resolve().parent
+DEFAULT_PROMPT = PACKAGE / "prompts" / "voice.md"
 STT_RATE = 16000
 
-SYSTEM = (
-    "Ты отвечаешь голосом через домашнюю колонку Keryx. Отвечай по-русски и коротко: одно-три предложения. "
-    "Без markdown, списков, ссылок, эмодзи и кода: всё будет прочитано вслух. Числа, даты и единицы пиши так, "
-    "как их естественно произнести."
-)
+
+def config_file():
+    """The config file in use, or None: $KERYX_CONFIG, else ~/.config/keryx/bridge.env, else the checkout's .env."""
+    if path := os.environ.get("KERYX_CONFIG"):
+        return pathlib.Path(path).expanduser()
+    config_home = pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or pathlib.Path.home() / ".config")
+    for path in (config_home / "keryx" / "bridge.env", PACKAGE.parents[1] / ".env"):
+        if path.is_file():
+            return path
+    return None
+
+
+def read_config(path):
+    values = {}
+    if path is not None and path.is_file():
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            values[key.strip().removeprefix("export ").strip()] = value.strip().strip("'\"")
+    return values
+
+
+CONFIG = config_file()
+SETTINGS = read_config(CONFIG)
 
 
 def env(name, default=None):
-    """The process environment first, then the repository's .env, then `default`; no default means required."""
-    if value := os.environ.get(name):
+    """A setting from the environment, then the config file, then `default`; no default means required."""
+    if value := os.environ.get(name) or SETTINGS.get(name):
         return value
-    path = REPO / ".env"
-    if path.exists():
-        for line in path.read_text().splitlines():
-            key, _, value = line.partition("=")
-            if key.strip() == name and value.strip():
-                return value.strip().strip("'\"")
     if default is None:
-        raise SystemExit(f"{name} is not set and not found in {path}")
+        raise SystemExit(f"{name} is not set: put it into {CONFIG or '~/.config/keryx/bridge.env'} "
+                         "(see bridge/bridge.env.example)")
     return default
 
 
+def config_path(value):
+    """A path from a setting; a relative one is taken from the config file's directory."""
+    path = pathlib.Path(value).expanduser()
+    if not path.is_absolute() and CONFIG is not None:
+        path = CONFIG.parent / path
+    return path
+
+
 def system_prompt(flag):
-    """(prompt, where it came from): --system, KERYX_SYSTEM_PROMPT, KERYX_SYSTEM_PROMPT_PATH, the built-in one."""
+    """(prompt, where it came from): --system, KERYX_SYSTEM_PROMPT, KERYX_SYSTEM_PROMPT_PATH, the bundled one."""
     if flag:
         return flag, "--system"
     if text := env("KERYX_SYSTEM_PROMPT", ""):
         return text.replace("\\n", "\n"), "KERYX_SYSTEM_PROMPT"
-    if path := env("KERYX_SYSTEM_PROMPT_PATH", ""):
-        file = pathlib.Path(path).expanduser()
-        file = file if file.is_absolute() else REPO / file
-        if not file.is_file():
-            raise SystemExit(f"KERYX_SYSTEM_PROMPT_PATH: no such file {file}")
-        return file.read_text().strip(), str(file)
-    return SYSTEM, "built-in"
+    file = config_path(env("KERYX_SYSTEM_PROMPT_PATH", str(DEFAULT_PROMPT)))
+    if not file.is_file():
+        raise SystemExit(f"KERYX_SYSTEM_PROMPT_PATH: no such file {file}")
+    return file.read_text().strip(), str(file)
 
 
 def log(message, conversation=None):
@@ -119,16 +139,38 @@ def stem(word):
 
 STOP_WORDS = {"стоп", "хватит", "подожди", "стой", "погоди", "тихо", "замолчи", "отмена", "stop"}
 
+GREETINGS = {"хей", "хэй", "эй", "ей", "ай", "hey", "hi", "hej", "ok", "окей"}
+LATIN = dict(zip("абвгдежзийклмнопрстуфхцчшщыэюя", "abvgdezziiklmnoprstufhccssyeua"))
+KERYX = re.compile(r"[kc][eiy]r[eiy]?[kxc]+s?")  # Keryx, Kerix, Kirex, Керикс, Кирекс…
+
+
+def strip_wake(text):
+    """(the rest, the wake phrase) when text starts with "Hey Keryx" or "Keryx" in any of its spellings.
+
+    Only used to tell an utterance that is nothing but the wake phrase; Hermes gets the phrase with the request
+    (the voice prompt tells it what the phrase is)."""
+    tokens = text.split()
+    i = 0
+    if tokens and (words(tokens[0]) or [""])[0] in GREETINGS:
+        i = 1
+    name = "".join(LATIN.get(c, c) for c in (words(tokens[i]) or [""])[0]) if i < len(tokens) else ""
+    if not KERYX.fullmatch(name):
+        return text, ""
+    return " ".join(tokens[i + 1:]).lstrip(" ,.!?—-"), " ".join(tokens[:i + 1])
+
 
 def add_arguments(parser, save_dir):
     """The options every front-end shares."""
-    parser.add_argument("--hermes", default=env("HERMES_URL", "http://rpi5:8642/v1"),
-                        help="Hermes API base URL (default HERMES_URL from .env, else http://rpi5:8642/v1)")
+    parser.add_argument("--hermes", default=env("HERMES_URL", "http://127.0.0.1:8642/v1"),
+                        help="Hermes API base URL (default HERMES_URL, else http://127.0.0.1:8642/v1)")
     parser.add_argument("--voice", default=env("XAI_VOICE", "eve"),
-                        help="xAI voice (default XAI_VOICE from .env, else eve)")
+                        help="xAI voice (default XAI_VOICE, else eve)")
     parser.add_argument("--gain", type=float, default=-6.0,
                         help="dB applied to the answer before it is played (default -6: xAI peaks near -4 dBFS)")
     parser.add_argument("--echo", action="store_true", help="skip Hermes: Keryx says back what it heard")
+    parser.add_argument("--no-flush-sentences", dest="flush_sentences", action="store_false",
+                        help="send text.done once per answer instead of after every sentence (smoother intonation, "
+                             "but xAI then holds back each sentence's end until the next one arrives)")
     parser.add_argument("--no-thinking-sound", dest="thinking_sound", action="store_false",
                         help="do not ask the board for its quiet \"thinking\" loop while Hermes works")
     parser.add_argument("--no-barge-in", dest="barge_in", action="store_false",
@@ -142,6 +184,9 @@ def add_arguments(parser, save_dir):
                         help="seconds after the speaker goes quiet that a word may still be its echo (default 0.8)")
     parser.add_argument("--preroll", type=float, default=0.0,
                         help="seconds of audio before the wake event sent to STT (default 0)")
+    parser.add_argument("--languages", default="ru,en,pl",
+                        help="languages STT may report; an utterance in any other is dropped as misheard "
+                             "(default ru,en,pl; empty keeps everything)")
     parser.add_argument("--wake-tail", type=float, default=2.0,
                         help="a one-word utterance ending this soon after the wake is the wake word's tail and is "
                              "skipped (default 2 s)")
@@ -156,7 +201,7 @@ def add_arguments(parser, save_dir):
                         help="seconds Hermes may stay silent mid-answer (default 120)")
     parser.add_argument("--history", type=int, default=6, help="exchanges kept as context (default 6)")
     parser.add_argument("--system", help="system prompt for the voice channel (default KERYX_SYSTEM_PROMPT, "
-                                          "else the file KERYX_SYSTEM_PROMPT_PATH, else a built-in one)")
+                                          "else the file KERYX_SYSTEM_PROMPT_PATH, else the bundled one)")
     parser.add_argument("--meter", type=float, default=2.0,
                         help="seconds between STT level lines during a conversation (default 2)")
     parser.add_argument("--heartbeat", type=float, default=15.0,
@@ -166,7 +211,9 @@ def add_arguments(parser, save_dir):
 
 def finish_arguments(args):
     """Resolves what add_arguments left open; logs where the system prompt came from."""
+    log(f"config: {CONFIG or 'none, the environment only'}")
     args.system, source = system_prompt(args.system)
+    args.languages = [x.strip() for x in args.languages.split(",") if x.strip()]
     first = args.system.splitlines()[0] if args.system else ""
     log(f"system prompt from {source}: {len(args.system)} chars, «{first[:80]}"
         f"{'…' if len(first) > 80 or len(args.system) > len(first) else ''}»")
@@ -179,6 +226,9 @@ class Exchange:
     def __init__(self, number):
         self.number = number
         self.marks = {}
+        self.sentences = 0  # handed to TTS
+        self.voiced = 0  # TTS audio.done received
+        self.hermes_done = False
 
     def mark(self, name, at=None):
         self.marks.setdefault(name, at or time.monotonic())
@@ -221,7 +271,7 @@ class Conversation:
     # ------------------------------------------------------------ events from outside
 
     def on_wake(self, score):
-        self.last_wake = time.monotonic()
+        self.last_wake = self.waiting_since = time.monotonic()  # the user is about to speak: wait for them anew
         self.tail_skipped = False
         if self.answering and self.args.barge_in:
             self.interrupt(f"wake word (score {score})")
@@ -230,6 +280,7 @@ class Conversation:
 
     def interrupt(self, reason):
         log(f"interrupting the answer while {self.state}: {reason}", self)
+        self.waiting_since = time.monotonic()
         self.answer_task.cancel()
 
     # ------------------------------------------------------------ echo of Keryx's own voice
@@ -390,6 +441,20 @@ class Conversation:
             return
         if echo:
             log(f"STT → speech_final with Keryx's own voice removed: {self.describe(event, text, echo)}", self)
+        language = event.get("language")
+        if language and self.args.languages and language not in self.args.languages:
+            # short phrases sometimes come back in a wrong language (Chinese for Russian); Hermes would answer it
+            log(f"STT → speech_final {text!r} in {language!r}, not one of {','.join(self.args.languages)}: "
+                "taken for a misrecognition, listening on", self)
+            self.waiting_since = time.monotonic()
+            return
+        rest, wake = strip_wake(text)
+        if wake and not rest.strip():
+            # nothing but "Hey Keryx": the request comes next; Hermes gets the wake phrase only along with it
+            log(f"STT → speech_final {text!r}: only the wake phrase, listening on", self)
+            if not self.answering:
+                self.waiting_since = time.monotonic()
+            return
         if len(words(text)) <= 1 and time.monotonic() - self.last_wake < self.args.wake_tail \
                 and not self.tail_skipped:
             # the end of "Hey Keryx" followed by the pause before the command: not the request yet
@@ -528,9 +593,11 @@ class Assistant:
             if not reply.strip():
                 log("Hermes returned no text: nothing to say (run with -v to see the raw stream)", conv)
                 await self.stop_thinking(conv)
+            exchange.hermes_done = True
             if sentences:
-                await tts.send_str(json.dumps({"type": "text.done"}))
-                log("TTS ← text.done", conv)
+                if not self.args.flush_sentences:
+                    await tts.send_str(json.dumps({"type": "text.done"}))
+                    log("TTS ← text.done", conv)
                 await receiver
             else:
                 receiver.cancel()
@@ -559,6 +626,8 @@ class Assistant:
             if self.history and self.history[-1]["role"] == "user":
                 self.history.pop()
         finally:
+            if getattr(exchange, "keepalive", None):
+                exchange.keepalive.cancel()
             self.history = self.history[-2 * self.args.history:]
             if conv.state != "over":
                 conv.state = "listening"
@@ -577,6 +646,11 @@ class Assistant:
         conv.keryx_said(text)
         log(f"TTS ← sentence {number} ({len(text)} chars): {text!r}", conv)
         await tts.send_str(json.dumps({"type": "text.delta", "delta": text + " "}))
+        if self.args.flush_sentences:
+            # xAI holds back the end of the text it has until more text or text.done comes; with Hermes slower
+            # than speech that left the speaker silent mid-word
+            await tts.send_str(json.dumps({"type": "text.done"}))
+        exchange.sentences += 1
         return 1
 
     async def hermes_stream(self, exchange, conv):
@@ -585,11 +659,16 @@ class Assistant:
                 exchange.mark("first_token")
                 yield word + " "
             return
-        messages = [{"role": "system", "content": self.args.system}] + self.history
+        system = self.args.system
+        status = self.board.status() if hasattr(self.board, "status") else []
+        if status:
+            system += "\n" + "\n".join(status)  # the prompt ends with its "Device status" section
+        messages = [{"role": "system", "content": system}] + self.history
         body = {"model": self.model, "stream": True, "messages": messages}
         if self.args.thinking_sound:
-            # the board loops a quiet "thinking" sound until we play something louder than -54 dBFS
+            # the board loops a quiet "thinking" sound until we play something louder than -54 dBFS, or for 60 s
             await self.board.sound("thinking", conv)
+            exchange.keepalive = asyncio.create_task(self.keep_thinking(exchange, conv))
         log(f"Hermes ← POST /chat/completions: {len(messages)} messages, "
             f"{sum(len(m['content']) for m in messages)} chars", conv)
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=self.args.hermes_timeout)
@@ -641,12 +720,27 @@ class Assistant:
             else:
                 log(f"Hermes → stream closed without [DONE]: {chunks} chunks, {chars} chars", conv)
 
+    async def keep_thinking(self, exchange, conv):
+        """The board stops its thinking loop after 60 s; Hermes with slow tools takes longer."""
+        while True:
+            await asyncio.sleep(45)
+            if "first_token" in exchange.marks:
+                return
+            await self.board.sound("thinking", conv)
+
     async def play(self, tts, exchange, conv):
         speaker, rate = self.speaker, self.speaker.rate
         audio = 0
         first_frame = self.mic.frames
         underflows_before = speaker.underflows
-        async for msg in tts:
+        starved_before = len(getattr(speaker, "starved", []))
+        while True:
+            try:
+                msg = await tts.receive(timeout=0.25)
+            except asyncio.TimeoutError:
+                if exchange.hermes_done and exchange.voiced >= exchange.sentences:
+                    break
+                continue
             if msg.type != aiohttp.WSMsgType.TEXT:
                 log(f"TTS: socket ended ({msg.type.name})", conv)
                 break
@@ -662,8 +756,11 @@ class Assistant:
                 log(f"TTS → audio {len(pcm) / 2 / rate:.2f} s; queue before it {queued:.2f} s, "
                     f"{audio / 2 / rate:.1f} s of the answer so far", conv)
             elif event["type"] == "audio.done":
-                log(f"TTS → audio.done: {audio / 2 / rate:.1f} s of speech", conv)
-                break
+                exchange.voiced += 1
+                log(f"TTS → audio.done {exchange.voiced}/{exchange.sentences}: {audio / 2 / rate:.1f} s of "
+                    "speech so far", conv)
+                if not self.args.flush_sentences or (exchange.hermes_done and exchange.voiced >= exchange.sentences):
+                    break
             elif event["type"] == "error":
                 raise RuntimeError(f"TTS: {event.get('message')}")
             else:
@@ -678,6 +775,7 @@ class Assistant:
         # the answer should be one stretch of sound; more stretches mean the queue ran dry in between
         stretches = [s for s in speaker.sounding if s[0] >= first_frame]
         gaps = [(b[0] - a[1]) / self.mic.rate * 1000 for a, b in zip(stretches, stretches[1:]) if a[1] is not None]
+        gaps += [g * 1000 for g in getattr(speaker, "starved", [])[starved_before:]]
         underflows = speaker.underflows - underflows_before
         log(f"speaker: finished; {len(gaps)} gaps in the queue"
             + (f" ({', '.join(f'{g:.0f}' for g in gaps)} ms)" if gaps else "")

@@ -1,13 +1,14 @@
 """Talk to Hermes through the Keryx board over USB, with the Mac standing in for the voice bridge.
 
 Waits for a `wake score=…` line on the board's serial console (or Enter with --enter), then runs the voice pipeline
-of voice.py on the ASR beam from the Keryx sound card, decimated to 16 kHz; the answer plays through the board,
-which also feeds it to the XVF3800 echo canceller (--speaker mac plays it on the Mac instead). bridge.py does the
-same with the board on Wi-Fi.
+of the bridge (bridge/keryx_bridge/voice.py) on the ASR beam from the Keryx sound card, decimated to 16 kHz; the
+answer plays through the board, which also feeds it to the XVF3800 echo canceller (--speaker mac plays it on the Mac
+instead). The bridge does the same with the board on Wi-Fi.
 """
 
 import argparse
 import asyncio
+import pathlib
 import sys
 import threading
 import time
@@ -18,7 +19,9 @@ import serial
 import sounddevice as sd
 
 from listen import RATE, Ring, find_card, find_console
-from voice import Assistant, add_arguments, apply_gain, dbfs, finish_arguments, log
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "bridge"))
+from keryx_bridge.voice import Assistant, add_arguments, apply_gain, dbfs, finish_arguments, log  # noqa: E402
 
 TTS_RATE = 48000  # the card's own rate: no resampling on the Mac
 CHUNK = RATE // 50  # 20 ms of the 48 kHz card

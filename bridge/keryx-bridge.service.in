@@ -1,0 +1,19 @@
+# The Keryx voice bridge as a systemd user service; install.sh fills in the paths.
+[Unit]
+Description=Keryx voice bridge (board over WebSocket, xAI speech, Hermes)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=@BRIDGE@
+ExecStart=@VENV@/bin/keryx-bridge run --heartbeat 300
+Restart=always
+RestartSec=3
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

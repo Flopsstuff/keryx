@@ -1,4 +1,4 @@
-"""The voice bridge for the Keryx board on Wi-Fi: a WebSocket server running voice.py's pipeline.
+"""The voice bridge for the Keryx board on Wi-Fi: a WebSocket server running the voice pipeline (voice.py).
 
 The board connects to ws://<host>:8765/keryx and keeps the connection (protocol v1, agreed with the firmware):
 
@@ -8,18 +8,22 @@ board → bridge
                                                    before the wake, then live, until listen_stop; a wake during a
                                                    running stream comes with preroll_ms 0 and no extra audio
   {"type":"played"}                                the board has finished playing (after play_end or play_stop)
+  {"type":"volume","value":N}                      the board's volume after any change (also "volume" in hello)
 bridge → board
   {"type":"ready"}                                 the answer to a good hello
   {"type":"listen_stop"}                           stop streaming the microphone
   {"type":"sound","name":"thinking"|"stop"|"wake"} the board's own sounds
   {"type":"play_start","rate":24000}, binary PCM16 mono of any size, {"type":"play_end"}   one answer
   {"type":"play_stop"}                             cut the answer now
+  {"type":"volume","value":0..100} or "delta":±n   set the board's volume (100 = 0 dB, 0.5 dB a step)
 
-The bridge checks the token against KERYX_BRIDGE_TOKEN from .env. Everything else (Hermes, xAI, the options) is
-as in converse.py; see voice.py.
+HTTP control on the same port, with the same token as `Authorization: Bearer …`: GET <path>/status, and
+POST <path>/volume with {"value": 0..100} or {"delta": n}, which answers with the volume the board reports back.
+
+The bridge checks the token against the KERYX_BRIDGE_TOKEN setting. Everything else (Hermes, xAI, the options)
+lives in voice.py.
 """
 
-import argparse
 import asyncio
 import json
 import secrets
@@ -30,7 +34,7 @@ import aiohttp
 import numpy as np
 from aiohttp import web
 
-from voice import STT_RATE, Assistant, add_arguments, apply_gain, dbfs, env, finish_arguments, log
+from .voice import STT_RATE, Assistant, apply_gain, dbfs, env, log
 
 KEEP_S = 120  # seconds of the board's microphone kept for STT
 
@@ -76,6 +80,9 @@ class Link:
     def __init__(self):
         self.ws = None
         self.id = None
+        self.firmware = None
+        self.volume = None  # 0..100 as the board last reported it
+        self.volume_changed = asyncio.Event()
 
     async def send(self, message, conversation=None):
         if self.ws is None or self.ws.closed:
@@ -91,6 +98,28 @@ class Link:
     async def listen_stop(self, conversation=None):
         if await self.send({"type": "listen_stop"}, conversation):
             log("board ← listen_stop", conversation)
+
+    def status(self):
+        """Lines for the "Device status" section of the voice prompt."""
+        if self.ws is None:
+            return []
+        lines = []
+        if self.volume is not None:
+            lines.append(f"volume: {self.volume} of 100 (100 is the loudest; 0.5 dB a step)")
+        return lines
+
+    async def set_volume(self, message):
+        """Sends a volume message and returns the volume the board reports back, or None after 2 s."""
+        self.volume_changed.clear()
+        if not await self.send({"type": "volume", **message}):
+            return None
+        log(f"board ← volume {json.dumps(message)}")
+        try:
+            await asyncio.wait_for(self.volume_changed.wait(), 2)
+        except asyncio.TimeoutError:
+            log("board: no volume reply within 2 s")
+            return None
+        return self.volume
 
 
 class BoardSpeaker:
@@ -110,6 +139,8 @@ class BoardSpeaker:
         self.underflows = 0  # the board does not report them
         self.started = None  # monotonic time of play_start, while an answer is open on the board
         self.sent = 0  # bytes of the open answer sent so far
+        self.ends_at = 0.0  # when the board will have played everything sent, if it plays as audio arrives
+        self.starved = []  # seconds the board had nothing to play in the middle of an answer
         self.played = asyncio.Event()
         self.played.set()
 
@@ -124,11 +155,16 @@ class BoardSpeaker:
             if not await self.link.send({"type": "play_start", "rate": self.rate}):
                 return
             log(f"board ← play_start {self.rate} Hz")
-            self.started = self.first_sound = time.monotonic()
+            self.started = self.first_sound = self.ends_at = time.monotonic()
             self.sent = 0
             self.played.clear()
             self.sounding = self.sounding[-50:] + [[self.mic.frames, None]]
         pcm = apply_gain(pcm, self.gain)
+        now = time.monotonic()
+        if self.sent and now > self.ends_at + 0.02:
+            self.starved.append(now - self.ends_at)
+            log(f"speaker: the board ran dry for {(now - self.ends_at) * 1000:.0f} ms before this piece")
+        self.ends_at = max(now, self.ends_at) + len(pcm) / 2 / self.rate
         self.sent += len(pcm)
         await self.link.ws.send_bytes(pcm)
 
@@ -141,7 +177,7 @@ class BoardSpeaker:
         """Seconds sent but not played yet, assuming the board started playing at play_start."""
         if self.started is None:
             return 0.0
-        return max(0.0, self.sent / 2 / self.rate - (time.monotonic() - self.started))
+        return max(0.0, self.ends_at - time.monotonic())
 
     async def drain(self):
         if self.started is None:
@@ -194,6 +230,9 @@ class Bridge:
             log(f"board {peer}: no hello within 10 s, closing")
             await ws.close(code=4002, message=b"no hello")
             return ws
+        if hello.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.CLOSED):
+            log(f"board {peer}: closed the connection before its hello")
+            return ws
         try:
             hello = json.loads(hello.data) if hello.type == aiohttp.WSMsgType.TEXT else {}
         except json.JSONDecodeError:
@@ -206,8 +245,10 @@ class Bridge:
             log(f"board {self.link.id}: replaced by a new connection")
             await self.link.ws.close(code=4000, message=b"replaced")
         self.link.ws, self.link.id = ws, hello.get("id", "?")
+        self.link.firmware, self.link.volume = hello.get("firmware"), hello.get("volume")
         await ws.send_str(json.dumps({"type": "ready"}))
-        log(f"board {self.link.id} ready: firmware {hello.get('firmware', '?')!r}, from {peer}")
+        log(f"board {self.link.id} ready: firmware {hello.get('firmware', '?')!r}, volume {self.link.volume}, "
+            f"from {peer}")
         try:
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.BINARY:
@@ -227,6 +268,37 @@ class Bridge:
                     conv.task.cancel()
         return ws
 
+    # ------------------------------------------------------------ HTTP control, for Hermes and for tests
+
+    def authorized(self, request):
+        given = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        return secrets.compare_digest(given, self.token)
+
+    async def http_status(self, request):
+        if not self.authorized(request):
+            return web.json_response({"error": "bad token"}, status=401)
+        return web.json_response({"connected": self.link.ws is not None, "id": self.link.id,
+                                  "firmware": self.link.firmware, "volume": self.link.volume,
+                                  "conversation": not self.assistant.idle()})
+
+    async def http_volume(self, request):
+        """POST {"value": 0..100} or {"delta": ±n}; answers with the volume the board then reports."""
+        if not self.authorized(request):
+            return web.json_response({"error": "bad token"}, status=401)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        message = {k: int(body[k]) for k in ("value", "delta") if k in body}
+        if len(message) != 1:
+            return web.json_response({"error": 'send {"value": 0..100} or {"delta": n}'}, status=400)
+        if self.link.ws is None:
+            return web.json_response({"error": "no board connected"}, status=503)
+        volume = await self.link.set_volume(message)
+        if volume is None:
+            return web.json_response({"error": "the board did not answer"}, status=504)
+        return web.json_response({"volume": volume})
+
     def on_message(self, data):
         try:
             message = json.loads(data)
@@ -243,25 +315,32 @@ class Bridge:
         elif kind == "played":
             log("board → played", conv)
             self.speaker.on_played()
+        elif kind == "volume":
+            self.link.volume = message.get("value")
+            self.link.volume_changed.set()
+            log(f"board → volume {self.link.volume}", conv)
         else:
             log(f"board → {json.dumps(message, ensure_ascii=False)[:200]}", conv)
 
 
-async def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    add_arguments(parser, "recordings/bridge")
-    parser.add_argument("--host", default="0.0.0.0", help="address to listen on (default 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=8765, help="port (default 8765)")
+def add_server_arguments(parser):
+    parser.add_argument("--host", default=env("KERYX_BRIDGE_HOST", "0.0.0.0"),
+                        help="address to listen on (default KERYX_BRIDGE_HOST, else 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=int(env("KERYX_BRIDGE_PORT", "8765")),
+                        help="port (default KERYX_BRIDGE_PORT, else 8765)")
     parser.add_argument("--path", default="/keryx", help="WebSocket path (default /keryx)")
     parser.add_argument("--tts-rate", type=int, default=24000, choices=[16000, 24000],
                         help="sample rate of the answer sent to the board (default 24000, xAI's own)")
-    args = finish_arguments(parser.parse_args())
 
+
+async def serve(args):
     async with aiohttp.ClientSession() as session:
         bridge = Bridge(args, session)
         await bridge.assistant.connect()
         app = web.Application()
         app.router.add_get(args.path, bridge.handle)
+        app.router.add_get(args.path + "/status", bridge.http_status)
+        app.router.add_post(args.path + "/volume", bridge.http_volume)
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         await web.TCPSite(runner, args.host, args.port).start()
@@ -270,10 +349,3 @@ async def main():
             await bridge.assistant.heartbeat(bridge.status)
         finally:
             await runner.cleanup()
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
