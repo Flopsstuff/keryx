@@ -21,6 +21,7 @@ static const char *TAG = "console";
 
 static SemaphoreHandle_t write_lock;
 static const char *banner_text;
+static keryx_console_command_fn app_command;
 
 static void write_bytes(const char *data, size_t len)
 {
@@ -77,7 +78,7 @@ static void run_command(const char *cmd)
         ESP_LOGI(TAG, "rebooting");
         vTaskDelay(pdMS_TO_TICKS(100));
         esp_restart();
-    } else if (cmd[0] != '\0') {
+    } else if (cmd[0] != '\0' && (app_command == NULL || !app_command(cmd))) {
         keryx_console_printf("unknown command: %s (try: bootloader, reboot)\n", cmd);
     }
 }
@@ -111,9 +112,10 @@ static void console_task(void *arg)
     }
 }
 
-esp_err_t keryx_console_start(const char *banner)
+esp_err_t keryx_console_start(const char *banner, keryx_console_command_fn command)
 {
     banner_text = banner;
+    app_command = command;
     write_lock = xSemaphoreCreateMutex();
     if (write_lock == NULL) {
         return ESP_ERR_NO_MEM;

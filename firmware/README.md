@@ -86,3 +86,23 @@ from `wakeword/`, run streaming in float C: each 30 ms only the newest outputs o
 
 The console stays on the USB serial port, so `idf.py monitor` (or `./flash.sh wakeword` and then any serial
 terminal) shows the log. To record through the board again, flash `usb-soundcard`.
+
+## `keryx`
+
+The wake word and the USB sound card in one firmware; `wakeword` and `usb-soundcard` stay as their simpler
+predecessors.
+
+- One task reads I2S in 5 ms blocks and feeds both the wake word (ASR channel, as in `wakeword`) and the USB
+  microphone (48 kHz, 16-bit stereo: processed beam, ASR beam) through a stream buffer. The XVF3800 clocks I2S and
+  the host clocks USB, so audio older than 20 ms is dropped when the host reads.
+- Playback: the host's 1 ms packets go into a second buffer; a playback task writes I2S without a break, starting
+  once 15 ms are queued and dropping the excess beyond 60 ms. Writing each packet straight to I2S, as before, left
+  the DMA a few ms of slack and played gaps.
+- A detection prints `wake score=0.973` on the serial port (`components/keryx_console`, as in `usb-soundcard`) and
+  beeps on the headphone jack, mixed into the host's playback. The log goes to the same port, with a report every
+  5 s: peak score, ASR level, processing time per 5 ms block (about 0.5 ms), USB microphone and speaker buffers.
+- Serial port commands besides `bootloader` and `reboot`: `loop on` puts the XVF3800's echo reference — what was
+  played — on the left capture channel instead of the processed beam, to measure the playback path; `loop off`
+  restores it.
+- The host should send 48 kHz: macOS converting 16 kHz on the fly (PortAudio with its default small blocks) breaks
+  up the sound on this device; 24 and 44.1 kHz were fine.

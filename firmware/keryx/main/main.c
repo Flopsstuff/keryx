@@ -1,0 +1,415 @@
+/*
+ * Keryx: the "Hey Keryx" wake word and a USB sound card in one firmware.
+ *
+ * One task reads the XVF3800's I2S capture (48 kHz, 32-bit; L = processed beam, R = ASR beam) in 5 ms blocks and
+ * feeds both users from it:
+ * - the wake word (components/keryx_wakeword) on the ASR channel, as in the wakeword firmware;
+ * - the USB microphone: 16-bit stereo through a stream buffer to the UAC callback. The XVF3800 clocks I2S and the
+ *   host clocks USB, so the buffer drifts; whatever is older than MAX_LAG_MS when the host reads is dropped.
+ * Playback: the host sends 1 ms packets at its own clock. They go into a second stream buffer, and a playback task
+ * writes I2S without a break in 5 ms blocks: silence when the host is quiet, PLAY_PRIME_MS of its audio queued
+ * before playing starts, the excess dropped when the host runs ahead of the XVF3800's clock. Writing each packet
+ * to I2S as it came (what the UAC component's example does) left the DMA a few ms of slack and played gaps.
+ * A detection goes to the host as a `wake score=0.973` line on the serial port (keryx_console), which also carries
+ * the log, and answers with a short beep mixed into the playback. The XVF3800 reads the playback line as its echo
+ * reference, so neither reaches the ASR channel. `loop on` on the serial port puts that reference on the left
+ * capture channel instead of the processed beam, to hear or measure what really reached the headphone jack.
+ *
+ * The XVF3800 must run the I2S firmware, which clocks the bus; the ESP32 is the I2S slave. The USB PHY stays with
+ * the USB serial/JTAG console for a few seconds after boot, then TinyUSB takes it for the sound card and the
+ * serial port; the `bootloader` command there restarts into the ROM download mode (firmware/flash.sh sends it).
+ */
+
+#include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "driver/gpio.h"
+#include "driver/i2s_std.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/stream_buffer.h"
+#include "freertos/task.h"
+#include "keryx_console.h"
+#include "kww_decimate.h"
+#include "kww_frontend.h"
+#include "kww_model.h"
+#include "usb_device_uac.h"
+#include "xvf_control.h"
+
+static const char *TAG = "keryx";
+
+// XIAO ESP32S3 on the reSpeaker Flex
+#define PIN_I2C_SDA GPIO_NUM_5   // D4
+#define PIN_I2C_SCL GPIO_NUM_6   // D5
+#define PIN_I2S_BCLK GPIO_NUM_8  // D9
+#define PIN_I2S_LRCK GPIO_NUM_7  // D8
+#define PIN_I2S_DOUT GPIO_NUM_44 // D7, to XVF3800 I2S DATA0 (playback and AEC reference)
+#define PIN_I2S_DIN GPIO_NUM_43  // D6, from XVF3800 I2S DATA1 (L processed, R ASR)
+
+#define SAMPLE_RATE 48000
+#define BLOCK_FRAMES 240        // 5 ms; a multiple of 3 for the 48 -> 16 kHz decimator
+#define DMA_BLOCKS 4            // I2S DMA queue: 20 ms each way
+#define MIC_BUFFER_MS 100       // stream buffer between capture and the USB microphone
+#define MAX_LAG_MS 20           // older audio is dropped when the host reads
+#define PLAY_BUFFER_MS 100      // stream buffer between the USB speaker and the playback task
+#define PLAY_PRIME_MS 15        // queued before playing starts: covers USB and scheduling jitter
+#define PLAY_MAX_MS 60          // more queued than this: the host runs ahead, the excess is dropped
+#define SETTLE_MS 1000          // silence after starting I2S; sound sent earlier comes out with noise
+#define CONSOLE_GRACE_MS 3000   // keep the serial/JTAG console (and esptool) before TinyUSB takes the USB PHY
+#define ASR_GAIN 4.0f           // AEC_ASROUTGAIN, +12 dB: the wake word model learned the channel at this gain
+#define REFRACTORY_MS 1000      // one detection per phrase
+#define WARMUP_MS 2500          // the model needs KWW_RECEPTIVE frames of history before its scores mean anything
+#define REPORT_MS 5000
+#define PLAYBACK_IDLE_MS 20     // the host counts as not playing after this long without audio
+#define BEEP_HZ 880.0f
+#define BEEP_MS 120
+#define BEEP_DBFS -18.0f
+#define BEEP_FRAMES (SAMPLE_RATE * BEEP_MS / 1000)
+
+#define FRAME_BYTES (2 * sizeof(int16_t))
+#define MS_BYTES (SAMPLE_RATE / 1000 * FRAME_BYTES)
+
+// XVF3800 output mux of the left capture channel (category, source); see docs/respeaker-flex-xvf3800.md
+#define XVF_AUDIO_MGR_RESID 35
+#define XVF_AUDIO_MGR_OP_L 15
+static const uint8_t OP_L_BEAM[2] = {8, 0};       // user chosen channel: the processed auto-select beam
+static const uint8_t OP_L_REFERENCE[2] = {4, 0};  // far end: the echo reference, i.e. our playback
+
+static i2s_chan_handle_t i2s_tx, i2s_rx;
+static StreamBufferHandle_t mic_buffer, play_buffer;
+static char banner[128];
+
+// statistics for the report, reset with it
+static volatile int64_t last_mic_read_us;      // the host is recording while this is recent
+static volatile uint32_t mic_dropped_bytes;    // dropped for lag
+static volatile uint32_t mic_short_reads;      // the callback had less than asked for
+static volatile uint32_t capture_overruns;     // blocks that did not fit into the stream buffer
+static volatile uint32_t play_underruns;       // the host's audio ran out while it was still playing
+static volatile uint32_t play_overflows;       // packets that did not fit into the playback buffer
+static volatile uint32_t play_dropped_bytes;   // dropped because the host ran ahead
+
+// speaker gain in Q15, from the host's volume and mute controls
+static volatile int32_t speaker_gain = 32767;
+static volatile uint32_t speaker_volume = 100;
+static volatile bool speaker_muted;
+static volatile int64_t last_playback_us;
+
+// the beep, 32-bit stereo; beep_pos < BEEP_FRAMES while it is being played
+static int32_t beep_tone[BEEP_FRAMES * 2];
+static volatile int beep_pos = BEEP_FRAMES;
+
+static void update_speaker_gain(void)
+{
+    // the component maps the host's -50..0 dB volume range onto 0..100
+    double db = speaker_volume / 2.0 - 50.0;
+    speaker_gain = speaker_muted || speaker_volume == 0 ? 0 : (int32_t)(pow(10.0, db / 20.0) * 32767.0);
+}
+
+static void i2s_start(void)
+{
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_SLAVE);
+    chan_cfg.dma_desc_num = DMA_BLOCKS;
+    chan_cfg.dma_frame_num = BLOCK_FRAMES;
+    chan_cfg.auto_clear = true; // silence if the playback task ever falls behind
+    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &i2s_tx, &i2s_rx));
+
+    i2s_std_config_t std_cfg = {
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = {
+            .mclk = I2S_GPIO_UNUSED,
+            .bclk = PIN_I2S_BCLK,
+            .ws = PIN_I2S_LRCK,
+            .dout = PIN_I2S_DOUT,
+            .din = PIN_I2S_DIN,
+        },
+    };
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(i2s_tx, &std_cfg));
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(i2s_rx, &std_cfg));
+    ESP_ERROR_CHECK(i2s_channel_enable(i2s_tx));
+    ESP_ERROR_CHECK(i2s_channel_enable(i2s_rx));
+}
+
+// A short tone with 10 ms fades so it does not click.
+static void make_beep(void)
+{
+    const int fade = SAMPLE_RATE / 100;
+    const float amplitude = powf(10.0f, BEEP_DBFS / 20.0f) * 2147483647.0f;
+    for (int i = 0; i < BEEP_FRAMES; i++) {
+        float env = i < fade ? (float)i / fade : i > BEEP_FRAMES - fade ? (float)(BEEP_FRAMES - i) / fade : 1.0f;
+        int32_t v = (int32_t)(amplitude * env * sinf(2.0f * (float)M_PI * BEEP_HZ * i / SAMPLE_RATE));
+        beep_tone[2 * i] = beep_tone[2 * i + 1] = v;
+    }
+}
+
+// Writes I2S without a break, at the XVF3800's pace: the host's audio from the playback buffer, or silence, and the
+// beep mixed in.
+static void playback_task(void *arg)
+{
+    static int16_t in[BLOCK_FRAMES * 2];
+    static int32_t out[BLOCK_FRAMES * 2];
+    bool playing = false;
+    for (;;) {
+        size_t queued = xStreamBufferBytesAvailable(play_buffer);
+        if (!playing && queued >= PLAY_PRIME_MS * MS_BYTES) {
+            playing = true;
+        }
+        size_t got = 0;
+        if (playing) {
+            while (queued > PLAY_MAX_MS * MS_BYTES) {
+                size_t n = queued - PLAY_MAX_MS * MS_BYTES;
+                n = n < sizeof(in) ? n - n % FRAME_BYTES : sizeof(in);
+                n = xStreamBufferReceive(play_buffer, in, n, 0);
+                play_dropped_bytes += n;
+                queued -= n;
+            }
+            got = xStreamBufferReceive(play_buffer, in, sizeof(in), 0);
+            if (got < sizeof(in)) {
+                // ran dry: the host stopped, or its audio comes late; queue PLAY_PRIME_MS again before going on
+                if (esp_timer_get_time() - last_playback_us < PLAYBACK_IDLE_MS * 1000LL) {
+                    play_underruns++;
+                }
+                playing = false;
+            }
+        }
+        memset((uint8_t *)in + got, 0, sizeof(in) - got);
+
+        int32_t gain = speaker_gain;
+        int pos = beep_pos;
+        for (int i = 0; i < BLOCK_FRAMES * 2; i++) {
+            int64_t v = (int64_t)in[i] * gain * 2; // Q15 gain; stays inside int32 even at full scale
+            if (pos < BEEP_FRAMES) {
+                v += beep_tone[2 * pos + (i & 1)];
+                pos += i & 1;
+            }
+            out[i] = v > INT32_MAX ? INT32_MAX : v < INT32_MIN ? INT32_MIN : (int32_t)v;
+        }
+        beep_pos = pos;
+        size_t written;
+        i2s_channel_write(i2s_tx, out, sizeof(out), &written, portMAX_DELAY);
+    }
+}
+
+// Reads I2S, hands the audio to the USB microphone and runs the wake word on the ASR channel.
+static void capture_task(void *arg)
+{
+    static int32_t raw[BLOCK_FRAMES * 2];
+    static int16_t pcm[BLOCK_FRAMES * 2];
+    static int16_t asr[BLOCK_FRAMES];
+    static int16_t audio16[BLOCK_FRAMES / 3 + 2];
+    static float frames[4][40];
+    static kww_decimate_t decimate;
+    static kww_frontend_t frontend;
+    static kww_state_t model;
+
+    kww_decimate_reset(&decimate);
+    if (!kww_frontend_init(&frontend)) {
+        ESP_LOGE(TAG, "micro_speech frontend failed to initialise");
+        vTaskDelete(NULL);
+    }
+    kww_reset(&model);
+
+    const int64_t start = esp_timer_get_time();
+    int64_t last_report = start, last_detection = 0, busy_us = 0;
+    int blocks = 0, peak_level = 0;
+    float peak_score = 0.0f;
+
+    for (;;) {
+        size_t got = 0;
+        if (i2s_channel_read(i2s_rx, raw, sizeof(raw), &got, 1000) != ESP_OK || got != sizeof(raw)) {
+            ESP_LOGW(TAG, "I2S read returned %u bytes", (unsigned)got);
+            continue;
+        }
+        int64_t t0 = esp_timer_get_time();
+
+        // the top 16 bits are what goes to the host; the right slot is the ASR output the model learned from
+        for (int i = 0; i < BLOCK_FRAMES * 2; i++) {
+            pcm[i] = (int16_t)(raw[i] >> 16);
+        }
+        // whole blocks only, so the channels never swap; the buffer fills up while the host is not recording
+        if (xStreamBufferSpacesAvailable(mic_buffer) >= sizeof(pcm)) {
+            xStreamBufferSend(mic_buffer, pcm, sizeof(pcm), 0);
+        } else if (esp_timer_get_time() - last_mic_read_us < 100000) {
+            capture_overruns++;
+        }
+
+        for (int i = 0; i < BLOCK_FRAMES; i++) {
+            asr[i] = pcm[2 * i + 1];
+            int level = asr[i] < 0 ? -asr[i] : asr[i];
+            peak_level = level > peak_level ? level : peak_level;
+        }
+        size_t n16 = kww_decimate(&decimate, asr, BLOCK_FRAMES, audio16);
+        int nframes = kww_frontend_process(&frontend, audio16, n16, frames, 4);
+        for (int f = 0; f < nframes; f++) {
+            float score;
+            if (!kww_push(&model, frames[f], &score)) {
+                continue;
+            }
+            const int64_t now = esp_timer_get_time();
+            if (now - start < WARMUP_MS * 1000LL) {
+                continue;
+            }
+            peak_score = score > peak_score ? score : peak_score;
+            if (score >= KWW_THRESHOLD && now - last_detection > REFRACTORY_MS * 1000LL) {
+                last_detection = now;
+                keryx_console_printf("wake score=%.3f\n", score);
+                beep_pos = 0;
+            }
+        }
+        busy_us += esp_timer_get_time() - t0;
+        blocks++;
+
+        const int64_t now = esp_timer_get_time();
+        if (now - last_report >= REPORT_MS * 1000LL) {
+            bool recording = now - last_mic_read_us < 100000;
+            bool playing = now - last_playback_us < PLAYBACK_IDLE_MS * 1000LL;
+            ESP_LOGI(TAG, "peak score %.3f | ASR peak %.1f dBFS | %.2f ms per 5 ms | USB mic %s, lag %u ms, "
+                          "dropped %u ms, short reads %u, overruns %u | USB speaker %s, queued %u ms, "
+                          "underruns %u, overflows %u, dropped %u ms", peak_score,
+                     20.0f * log10f((peak_level + 1) / 32768.0f), busy_us / 1000.0f / blocks,
+                     recording ? "on" : "off", (unsigned)(xStreamBufferBytesAvailable(mic_buffer) / MS_BYTES),
+                     (unsigned)(mic_dropped_bytes / MS_BYTES), (unsigned)mic_short_reads,
+                     (unsigned)capture_overruns, playing ? "on" : "off",
+                     (unsigned)(xStreamBufferBytesAvailable(play_buffer) / MS_BYTES), (unsigned)play_underruns,
+                     (unsigned)play_overflows, (unsigned)(play_dropped_bytes / MS_BYTES));
+            last_report = now;
+            busy_us = 0;
+            blocks = 0;
+            peak_level = 0;
+            peak_score = 0.0f;
+            mic_dropped_bytes = mic_short_reads = capture_overruns = 0;
+            play_underruns = play_overflows = play_dropped_bytes = 0;
+        }
+    }
+}
+
+// Host is recording: hand over the next `len` bytes of 16-bit stereo from the stream buffer.
+static esp_err_t uac_input_cb(uint8_t *buf, size_t len, size_t *bytes_read, void *ctx)
+{
+    const int64_t now = esp_timer_get_time();
+    if (now - last_mic_read_us > 100000) {
+        // the host just started: whatever piled up meanwhile is stale
+        size_t stale = xStreamBufferBytesAvailable(mic_buffer);
+        while (stale >= len) {
+            stale -= xStreamBufferReceive(mic_buffer, buf, len, 0);
+        }
+    }
+    last_mic_read_us = now;
+
+    // keep at most MAX_LAG_MS queued beyond this read
+    size_t queued = xStreamBufferBytesAvailable(mic_buffer);
+    while (queued > len + MAX_LAG_MS * MS_BYTES) {
+        size_t n = queued - len - MAX_LAG_MS * MS_BYTES;
+        n = n < len ? n - n % FRAME_BYTES : len;
+        if (n == 0) {
+            break;
+        }
+        n = xStreamBufferReceive(mic_buffer, buf, n, 0);
+        mic_dropped_bytes += n;
+        queued -= n;
+    }
+
+    // wait for the rest, at the XVF3800's pace
+    size_t done = 0;
+    while (done < len) {
+        size_t n = xStreamBufferReceive(mic_buffer, buf + done, len - done, pdMS_TO_TICKS(20));
+        if (n == 0) {
+            break;
+        }
+        done += n;
+    }
+    if (done < len) {
+        mic_short_reads++;
+    }
+    *bytes_read = done;
+    return ESP_OK;
+}
+
+// Host is playing: queue its 16-bit stereo for the playback task. Called every 1 ms; must not block.
+static esp_err_t uac_output_cb(uint8_t *buf, size_t len, void *ctx)
+{
+    last_playback_us = esp_timer_get_time();
+    len -= len % FRAME_BYTES;
+    if (xStreamBufferSpacesAvailable(play_buffer) >= len) {
+        xStreamBufferSend(play_buffer, buf, len, 0);
+    } else {
+        play_overflows++;
+    }
+    return ESP_OK;
+}
+
+static void uac_set_mute_cb(uint32_t mute, void *ctx)
+{
+    speaker_muted = mute != 0;
+    update_speaker_gain();
+}
+
+static void uac_set_volume_cb(uint32_t volume, void *ctx)
+{
+    speaker_volume = volume;
+    update_speaker_gain();
+}
+
+// Serial port commands beyond keryx_console's own.
+static bool console_command(const char *cmd)
+{
+    const uint8_t *op = strcmp(cmd, "loop on") == 0 ? OP_L_REFERENCE : strcmp(cmd, "loop off") == 0 ? OP_L_BEAM : NULL;
+    if (op == NULL) {
+        return false;
+    }
+    uint8_t now[2] = {0, 0};
+    esp_err_t err = xvf_write(XVF_AUDIO_MGR_RESID, XVF_AUDIO_MGR_OP_L, op, 2);
+    if (err == ESP_OK) {
+        err = xvf_read(XVF_AUDIO_MGR_RESID, XVF_AUDIO_MGR_OP_L, now, 2);
+    }
+    keryx_console_printf("left capture channel: %s (mux %u, %u)%s\n", op == OP_L_REFERENCE ? "echo reference" :
+                         "processed beam", now[0], now[1], err == ESP_OK && memcmp(now, op, 2) == 0 ? "" : " FAILED");
+    return true;
+}
+
+void app_main(void)
+{
+    // Until I2S takes over, the playback line floats while the XVF3800 keeps clocking the bus, and the codec plays
+    // whatever it picks up; hold it at zero instead. We are its only driver. From then on the playback task keeps
+    // writing, silence included.
+    gpio_config_t dout_cfg = {.pin_bit_mask = 1ULL << PIN_I2S_DOUT, .mode = GPIO_MODE_OUTPUT};
+    gpio_config(&dout_cfg);
+    gpio_set_level(PIN_I2S_DOUT, 0);
+
+    // the model was trained on the ASR channel at this gain; without it everything arrives 12 dB quieter
+    esp_err_t err = xvf_control_init(PIN_I2C_SDA, PIN_I2C_SCL);
+    if (err == ESP_OK) {
+        xvf_set_float_when_ready(XVF_AEC_RESID, XVF_AEC_ASROUTGAIN, ASR_GAIN, "XVF3800 ASR output gain");
+    } else {
+        ESP_LOGW(TAG, "no I2C to the XVF3800, ASR output gain left at its default: %s", esp_err_to_name(err));
+    }
+
+    // printed whenever a host opens the serial port: the start-up log is long gone by then
+    snprintf(banner, sizeof(banner), "Keryx: wake word threshold %.2f, esp-dsp decimator check %d (0 or 1 is fine)",
+             KWW_THRESHOLD, kww_decimate_self_check());
+    make_beep();
+    mic_buffer = xStreamBufferCreate(MIC_BUFFER_MS * MS_BYTES, 1);
+    play_buffer = xStreamBufferCreate(PLAY_BUFFER_MS * MS_BYTES, 1);
+    ESP_ERROR_CHECK(mic_buffer == NULL || play_buffer == NULL ? ESP_ERR_NO_MEM : ESP_OK);
+
+    i2s_start();
+    xTaskCreatePinnedToCore(playback_task, "playback", 4096, NULL, 7, NULL, 1);
+    xTaskCreatePinnedToCore(capture_task, "capture", 8192, NULL, 6, NULL, 1);
+    vTaskDelay(pdMS_TO_TICKS(SETTLE_MS));
+    ESP_LOGI(TAG, "I2S slave running, %d Hz; USB starts in %d s", SAMPLE_RATE, CONSOLE_GRACE_MS / 1000);
+    vTaskDelay(pdMS_TO_TICKS(CONSOLE_GRACE_MS));
+    ESP_LOGI(TAG, "handing USB to TinyUSB; the log moves to its serial port");
+
+    uac_device_config_t config = {
+        .output_cb = uac_output_cb,
+        .input_cb = uac_input_cb,
+        .set_mute_cb = uac_set_mute_cb,
+        .set_volume_cb = uac_set_volume_cb,
+    };
+    ESP_ERROR_CHECK(uac_device_init(&config));
+    ESP_ERROR_CHECK(keryx_console_start(banner, console_command));
+}

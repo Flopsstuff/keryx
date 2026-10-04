@@ -163,5 +163,5 @@ void app_main(void)
         .set_volume_cb = uac_set_volume_cb,
     };
     ESP_ERROR_CHECK(uac_device_init(&config));
-    ESP_ERROR_CHECK(keryx_console_start("Keryx usb-soundcard"));
+    ESP_ERROR_CHECK(keryx_console_start("Keryx usb-soundcard", NULL));
 }
