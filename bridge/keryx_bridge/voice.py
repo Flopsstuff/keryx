@@ -22,6 +22,7 @@ $KERYX_CONFIG, ~/.config/keryx/bridge.env, or the repository's .env in a develop
 
 import asyncio
 import base64
+import difflib
 import json
 import os
 import pathlib
@@ -132,9 +133,16 @@ def words(text):
     return re.findall(r"\w+", text.lower().replace("ё", "е"))
 
 
-def stem(word):
-    """Russian endings change between what Keryx says and what STT hears; the first five letters rarely do."""
-    return word[:5]
+def similar(heard, said):
+    """Whether STT's `heard` can be Keryx's `said` misheard: endings and a letter or two change (имя/имени,
+    узнаю/знаю), short words must match exactly."""
+    if heard == said:
+        return True
+    if min(len(heard), len(said)) <= 3:
+        return False
+    if heard[:4] == said[:4] or heard in said or said in heard:
+        return True
+    return difflib.SequenceMatcher(None, heard, said).ratio() >= 0.7
 
 
 STOP_WORDS = {"стоп", "хватит", "подожди", "стой", "погоди", "тихо", "замолчи", "отмена", "stop"}
@@ -256,7 +264,7 @@ class Conversation:
         self.sent = []  # 16 kHz chunks that went to speech-to-text, for --save
         self.exchanges = 0
         self.answer_task = None
-        self.said = set()  # stems of every word Keryx has said in this conversation, for telling echo apart
+        self.said = set()  # every word Keryx has said in this conversation, for telling echo apart
         self.cursor0 = frame  # microphone frame where the STT stream (its second 0) begins
         self.waiting_since = start  # when Keryx last started waiting for the user
         self.user_talking = False
@@ -286,7 +294,7 @@ class Conversation:
     # ------------------------------------------------------------ echo of Keryx's own voice
 
     def keryx_said(self, text):
-        self.said.update(stem(w) for w in words(text))
+        self.said.update(words(text))
 
     def is_echo(self, word):
         """A word heard while the speaker was playing that Keryx itself said (up to the ending) or a number."""
@@ -296,7 +304,7 @@ class Conversation:
         if not self.app.speaker.sounded(start, end, 0.1 * rate, self.args.echo_tail * rate):
             return False
         heard = words(word.get("text", ""))
-        return all(w.isdigit() or stem(w) in self.said for w in heard)
+        return all(w.isdigit() or len(w) <= 2 or any(similar(w, s) for s in self.said) for w in heard)
 
     def split_echo(self, event):
         """(the user's words, Keryx's own words) of a transcript event."""
@@ -420,15 +428,17 @@ class Conversation:
         log(f"STT → {flag}{extra}: {self.describe(event, user, echo)}", self)
         if not user:
             return
-        self.user_talking = True
         if self.answering and self.state == "speaking":
-            said = words(user)
-            if len(said) < 2 and not STOP_WORDS & set(said):
-                return  # one stray word may be a misheard echo; wait for more
+            said, heard_echo = [w for w in words(user) if len(w) > 2], words(echo)
+            if not STOP_WORDS & set(said) and (len(said) < 2 or len(said) < len(heard_echo)):
+                return  # a stray word or two among Keryx's own may be its echo misheard; wait for more
+            self.user_talking = True
             if self.args.barge_in:
                 self.interrupt(f"you started talking: {user!r}")
             else:
                 log("talking over Keryx; ignored (--no-barge-in)", self)
+            return
+        self.user_talking = True
 
     def on_utterance(self, event):
         self.user_talking = False
@@ -440,6 +450,13 @@ class Conversation:
                 self.waiting_since = time.monotonic()
             return
         if echo:
+            heard = words(text)
+            if not STOP_WORDS & set(heard) and len(heard) <= 3 and len(words(echo)) >= 2 * len(heard):
+                # mostly Keryx's own voice, the rest most likely its echo misheard: not a request
+                log(f"STT → speech_final mostly Keryx's own voice, dropped: {self.describe(event, text, echo)}", self)
+                if not self.answering:
+                    self.waiting_since = time.monotonic()
+                return
             log(f"STT → speech_final with Keryx's own voice removed: {self.describe(event, text, echo)}", self)
         language = event.get("language")
         if language and self.args.languages and language not in self.args.languages:
