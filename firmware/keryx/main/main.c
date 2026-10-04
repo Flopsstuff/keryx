@@ -11,8 +11,10 @@
  * before playing starts, the excess dropped when the host runs ahead of the XVF3800's clock. Writing each packet
  * to I2S as it came (what the UAC component's example does) left the DMA a few ms of slack and played gaps.
  * A detection goes to the host as a `wake score=0.973` line on the serial port (keryx_console), which also carries
- * the log, and answers with a short beep mixed into the playback. The XVF3800 reads the playback line as its echo
- * reference, so neither reaches the ASR channel. `loop on` on the serial port puts that reference on the left
+ * the log, and plays a chime. `sound thinking` there loops a quiet "thinking" sound until `sound stop`, until the
+ * host's audio starts or for THINKING_MAX_MS at most. Both are mixed into the playback (keryx_sounds.h, made by
+ * firmware/sounds/make_sounds.py). The XVF3800 reads the playback line as its echo reference, so none of it
+ * reaches the ASR channel. `loop on` on the serial port puts that reference on the left
  * capture channel instead of the processed beam, to hear or measure what really reached the headphone jack.
  *
  * The XVF3800 must run the I2S firmware, which clocks the bus; the ESP32 is the I2S slave. The USB PHY stays with
@@ -34,6 +36,7 @@
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
 #include "keryx_console.h"
+#include "keryx_sounds.h"
 #include "kww_decimate.h"
 #include "kww_frontend.h"
 #include "kww_model.h"
@@ -65,10 +68,9 @@ static const char *TAG = "keryx";
 #define WARMUP_MS 2500          // the model needs KWW_RECEPTIVE frames of history before its scores mean anything
 #define REPORT_MS 5000
 #define PLAYBACK_IDLE_MS 20     // the host counts as not playing after this long without audio
-#define BEEP_HZ 880.0f
-#define BEEP_MS 120
-#define BEEP_DBFS -18.0f
-#define BEEP_FRAMES (SAMPLE_RATE * BEEP_MS / 1000)
+#define THINKING_MAX_MS 60000   // the thinking sound stops by itself after this, should nobody stop it
+#define SOUND_FADE_FRAMES 480   // 10 ms fade when a sound is stopped while it sounds
+#define HOST_AUDIBLE 64         // host audio peaking above this (-54 dBFS) stops the thinking sound
 
 #define FRAME_BYTES (2 * sizeof(int16_t))
 #define MS_BYTES (SAMPLE_RATE / 1000 * FRAME_BYTES)
@@ -98,9 +100,10 @@ static volatile uint32_t speaker_volume = 100;
 static volatile bool speaker_muted;
 static volatile int64_t last_playback_us;
 
-// the beep, 32-bit stereo; beep_pos < BEEP_FRAMES while it is being played
-static int32_t beep_tone[BEEP_FRAMES * 2];
-static volatile int beep_pos = BEEP_FRAMES;
+// interface sounds: requests from other tasks; the playback task keeps the positions
+static volatile bool wake_sound_requested;
+static volatile bool thinking_requested;
+static volatile int64_t thinking_started_us;
 
 static void update_speaker_gain(void)
 {
@@ -134,25 +137,22 @@ static void i2s_start(void)
     ESP_ERROR_CHECK(i2s_channel_enable(i2s_rx));
 }
 
-// A short tone with 10 ms fades so it does not click.
-static void make_beep(void)
+static void sound_thinking(bool on)
 {
-    const int fade = SAMPLE_RATE / 100;
-    const float amplitude = powf(10.0f, BEEP_DBFS / 20.0f) * 2147483647.0f;
-    for (int i = 0; i < BEEP_FRAMES; i++) {
-        float env = i < fade ? (float)i / fade : i > BEEP_FRAMES - fade ? (float)(BEEP_FRAMES - i) / fade : 1.0f;
-        int32_t v = (int32_t)(amplitude * env * sinf(2.0f * (float)M_PI * BEEP_HZ * i / SAMPLE_RATE));
-        beep_tone[2 * i] = beep_tone[2 * i + 1] = v;
-    }
+    thinking_started_us = esp_timer_get_time();
+    thinking_requested = on;
 }
 
-// Writes I2S without a break, at the XVF3800's pace: the host's audio from the playback buffer, or silence, and the
-// beep mixed in.
+// Writes I2S without a break, at the XVF3800's pace: the host's audio from the playback buffer, or silence, with the
+// interface sounds mixed in.
 static void playback_task(void *arg)
 {
     static int16_t in[BLOCK_FRAMES * 2];
     static int32_t out[BLOCK_FRAMES * 2];
     bool playing = false;
+    int wake_pos = KERYX_SOUND_WAKE_LEN;  // < LEN while the chime sounds
+    bool thinking = false;
+    int thinking_pos = 0, thinking_fade = 0;  // fade: frames left of a fade-out, 0 when not fading
     for (;;) {
         size_t queued = xStreamBufferBytesAvailable(play_buffer);
         if (!playing && queued >= PLAY_PRIME_MS * MS_BYTES) {
@@ -178,17 +178,52 @@ static void playback_task(void *arg)
         }
         memset((uint8_t *)in + got, 0, sizeof(in) - got);
 
-        int32_t gain = speaker_gain;
-        int pos = beep_pos;
-        for (int i = 0; i < BLOCK_FRAMES * 2; i++) {
-            int64_t v = (int64_t)in[i] * gain * 2; // Q15 gain; stays inside int32 even at full scale
-            if (pos < BEEP_FRAMES) {
-                v += beep_tone[2 * pos + (i & 1)];
-                pos += i & 1;
-            }
-            out[i] = v > INT32_MAX ? INT32_MAX : v < INT32_MIN ? INT32_MIN : (int32_t)v;
+        if (wake_sound_requested) {
+            wake_sound_requested = false;
+            wake_pos = 0;
         }
-        beep_pos = pos;
+        int host_peak = 0;
+        for (int i = 0; i < BLOCK_FRAMES * 2; i++) {
+            int level = in[i] < 0 ? -in[i] : in[i];
+            host_peak = level > host_peak ? level : host_peak;
+        }
+        if (thinking_requested && (host_peak > HOST_AUDIBLE ||
+                                   esp_timer_get_time() - thinking_started_us > THINKING_MAX_MS * 1000LL)) {
+            thinking_requested = false;  // the answer has started, or nobody stopped it
+        }
+        if (thinking_requested && !thinking) {
+            thinking = true;
+            thinking_pos = thinking_fade = 0;
+        } else if (!thinking_requested && thinking && thinking_fade == 0) {
+            // between the taps it can stop at once; within one, fade out
+            if (thinking_pos < KERYX_SOUND_THINKING_LEN) {
+                thinking_fade = SOUND_FADE_FRAMES;
+            } else {
+                thinking = false;
+            }
+        }
+
+        int32_t gain = speaker_gain;
+        for (int f = 0; f < BLOCK_FRAMES; f++) {
+            int32_t sound = 0;
+            if (wake_pos < KERYX_SOUND_WAKE_LEN) {
+                sound += keryx_sound_wake[wake_pos++];
+            }
+            if (thinking) {
+                int32_t v = thinking_pos < KERYX_SOUND_THINKING_LEN ? keryx_sound_thinking[thinking_pos] : 0;
+                if (thinking_fade > 0) {
+                    v = v * thinking_fade / SOUND_FADE_FRAMES;
+                    thinking = --thinking_fade > 0;
+                }
+                sound += v;
+                thinking_pos = (thinking_pos + 1) % KERYX_SOUND_THINKING_LOOP;
+            }
+            for (int c = 0; c < 2; c++) {
+                // Q15 gain; stays inside int32 even at full scale
+                int64_t v = (int64_t)in[2 * f + c] * gain * 2 + ((int64_t)sound << 16);
+                out[2 * f + c] = v > INT32_MAX ? INT32_MAX : v < INT32_MIN ? INT32_MIN : (int32_t)v;
+            }
+        }
         size_t written;
         i2s_channel_write(i2s_tx, out, sizeof(out), &written, portMAX_DELAY);
     }
@@ -257,7 +292,7 @@ static void capture_task(void *arg)
             if (score >= KWW_THRESHOLD && now - last_detection > REFRACTORY_MS * 1000LL) {
                 last_detection = now;
                 keryx_console_printf("wake score=%.3f\n", score);
-                beep_pos = 0;
+                wake_sound_requested = true;
             }
         }
         busy_us += esp_timer_get_time() - t0;
@@ -357,6 +392,14 @@ static void uac_set_volume_cb(uint32_t volume, void *ctx)
 // Serial port commands beyond keryx_console's own.
 static bool console_command(const char *cmd)
 {
+    if (strcmp(cmd, "sound wake") == 0) {
+        wake_sound_requested = true;
+        return true;
+    }
+    if (strcmp(cmd, "sound thinking") == 0 || strcmp(cmd, "sound stop") == 0) {
+        sound_thinking(cmd[6] == 't');
+        return true;
+    }
     const uint8_t *op = strcmp(cmd, "loop on") == 0 ? OP_L_REFERENCE : strcmp(cmd, "loop off") == 0 ? OP_L_BEAM : NULL;
     if (op == NULL) {
         return false;
@@ -391,7 +434,6 @@ void app_main(void)
     // printed whenever a host opens the serial port: the start-up log is long gone by then
     snprintf(banner, sizeof(banner), "Keryx: wake word threshold %.2f, esp-dsp decimator check %d (0 or 1 is fine)",
              KWW_THRESHOLD, kww_decimate_self_check());
-    make_beep();
     mic_buffer = xStreamBufferCreate(MIC_BUFFER_MS * MS_BYTES, 1);
     play_buffer = xStreamBufferCreate(PLAY_BUFFER_MS * MS_BYTES, 1);
     ESP_ERROR_CHECK(mic_buffer == NULL || play_buffer == NULL ? ESP_ERR_NO_MEM : ESP_OK);

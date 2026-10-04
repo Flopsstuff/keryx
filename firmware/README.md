@@ -99,7 +99,10 @@ predecessors.
   once 15 ms are queued and dropping the excess beyond 60 ms. Writing each packet straight to I2S, as before, left
   the DMA a few ms of slack and played gaps.
 - A detection prints `wake score=0.973` on the serial port (`components/keryx_console`, as in `usb-soundcard`) and
-  beeps on the headphone jack, mixed into the host's playback. The log goes to the same port, with a report every
+  plays a chime on the headphone jack, mixed into the host's playback. `sound thinking` loops a quiet "thinking"
+  sound until `sound stop`, until the host's audio starts (above −54 dBFS) or for 60 s at most; `sound wake`
+  plays the chime. The sounds are synthesised by `sounds/make_sounds.py` (`--export` writes the chosen ones to
+  `keryx/main/keryx_sounds.h`; without it, candidates to listen to go to `sounds/candidates/`). The log goes to the same port, with a report every
   5 s: peak score, ASR level, processing time per 5 ms block (about 0.5 ms), USB microphone and speaker buffers.
 - Serial port commands besides `bootloader` and `reboot`: `loop on` puts the XVF3800's echo reference — what was
   played — on the left capture channel instead of the processed beam, to measure the playback path; `loop off`
