@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Flash an ESP-IDF project in this directory onto the XIAO ESP32S3.
 #
-# Firmware that hands the USB port to TinyUSB (usb-soundcard) keeps the serial console only for the first few
-# seconds after boot, so this waits for the port to show up and flashes straight away. Run it, then press RESET on
-# the XIAO or replug its USB cable.
+# Ports are told apart by USB ID: the ROM bootloader and firmware that keeps the USB serial/JTAG console show up as
+# 303A:1001; the Keryx USB device (usb-soundcard) as 303A:8000, whose serial port (keryx_console) takes a
+# `bootloader` command. With neither, e.g. older firmware that gives the USB port to TinyUSB with no serial port,
+# this waits for the console port: press RESET on the XIAO or replug its USB cable.
 set -euo pipefail
 
 project=${1:?usage: flash.sh <project>, e.g. flash.sh usb-soundcard}
@@ -12,9 +13,20 @@ cd "$(dirname "$0")/$project"
 idf.py build > /dev/null
 cd build
 
-echo "waiting for the XIAO's serial port: press RESET on the XIAO or replug it"
+find_port() {
+    python -m serial.tools.list_ports -q "$1" 2>/dev/null | head -1 | awk '{print $1}'
+}
+
+console=$(find_port 303A:8000)
+if [ -n "$console" ]; then
+    echo "asking $console to restart into the bootloader"
+    python -c 'import serial, sys; serial.Serial(sys.argv[1]).write(b"bootloader\n")' "$console"
+elif [ -z "$(find_port 303A:1001)" ]; then
+    echo "waiting for the XIAO's serial port: press RESET on the XIAO or replug it"
+fi
+
 for _ in $(seq 1 1200); do
-    port=$(ls /dev/cu.usbmodem* 2>/dev/null | head -1 || true)
+    port=$(find_port 303A:1001)
     if [ -n "$port" ]; then
         # the port shows up a moment before it can be opened
         for attempt in $(seq 1 25); do

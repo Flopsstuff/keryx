@@ -41,6 +41,10 @@ enum {
 #if MIC_CHANNEL_NUM
     ITF_NUM_AUDIO_STREAMING_MIC,
 #endif // MIC_CHANNEL_NUM
+#if CONFIG_UAC_CDC
+    ITF_NUM_CDC,
+    ITF_NUM_CDC_DATA,
+#endif // CONFIG_UAC_CDC
     ITF_NUM_TOTAL
 };
 #endif

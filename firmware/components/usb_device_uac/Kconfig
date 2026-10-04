@@ -35,6 +35,13 @@ menu "USB Device UAC Configuration"
             config TINYUSB_RHPORT_FS
                 bool "Full Speed"
         endchoice
+
+        config UAC_CDC
+            bool "Also a CDC ACM serial port (Keryx patch)"
+            default n
+            help
+                Adds a CDC ACM interface next to the audio ones, making a composite device. The application talks to
+                it with TinyUSB's tud_cdc_* functions.
     endif
 
     # Insert UAC config

@@ -63,16 +63,29 @@ uint8_t const *tud_descriptor_device_cb(void)
 //--------------------------------------------------------------------+
 // Configuration Descriptor
 //--------------------------------------------------------------------+
+#if CONFIG_UAC_CDC
+#define CONFIG_TOTAL_LEN        (TUD_CONFIG_DESC_LEN + CFG_TUD_AUDIO * TUD_AUDIO_DEVICE_DESC_LEN + TUD_CDC_DESC_LEN)
+#else
 #define CONFIG_TOTAL_LEN        (TUD_CONFIG_DESC_LEN + CFG_TUD_AUDIO * TUD_AUDIO_DEVICE_DESC_LEN)
+#endif
 #define EPNUM_AUDIO_OUT   0x01
 #define EPNUM_AUDIO_FB    0x81
 #define EPNUM_AUDIO_IN    0x82
+// CDC (Keryx patch). The ESP32-S3 has at most 5 IN endpoints, EP0 included: these use the last two.
+#define EPNUM_CDC_NOTIF   0x83
+#define EPNUM_CDC_OUT     0x04
+#define EPNUM_CDC_IN      0x84
+#define STRID_CDC         (5 + (SPEAK_CHANNEL_NUM ? 1 : 0) + (MIC_CHANNEL_NUM ? 1 : 0))
 
 uint8_t const desc_configuration[] = {
     // Config number, interface count, string index, total length, attribute, power in mA
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, 0x00, 100),
     // Interface number, string index, EP Out & EP In address, EP size
     TUD_AUDIO_DESCRIPTOR(ITF_NUM_AUDIO_CONTROL, 4, EPNUM_AUDIO_OUT, EPNUM_AUDIO_IN, EPNUM_AUDIO_FB),
+#if CONFIG_UAC_CDC
+    // Interface number, string index, EP notification address and size, EP data address (out, in) and size
+    TUD_CDC_DESCRIPTOR(ITF_NUM_CDC, STRID_CDC, EPNUM_CDC_NOTIF, 8, EPNUM_CDC_OUT, EPNUM_CDC_IN, CFG_TUD_CDC_EP_BUFSIZE),
+#endif
 };
 
 // Invoked when received GET CONFIGURATION DESCRIPTOR
@@ -100,6 +113,9 @@ char const *string_desc_arr [] = {
 #endif
 #if MIC_CHANNEL_NUM
     "microphone",                   // 6: Mic Interface
+#endif
+#if CONFIG_UAC_CDC
+    CONFIG_UAC_TUSB_PRODUCT " console", // STRID_CDC: CDC interface (Keryx patch)
 #endif
 };
 

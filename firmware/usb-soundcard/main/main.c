@@ -8,8 +8,9 @@
  * around -27 dBFS peak; xvf_control keeps trying until the XVF3800 has booted and taken the value.
  *
  * The XVF3800 must run the I2S firmware, which clocks the bus; the ESP32 is the I2S slave. The USB PHY stays with
- * the USB serial/JTAG console for a few seconds after boot so the start-up log can be read, then TinyUSB takes it
- * and the board is only a sound card. To flash again, hold BOOT while pressing RESET.
+ * the USB serial/JTAG console for a few seconds after boot so the start-up log can be read, then TinyUSB takes it.
+ * From then on the board is a sound card plus a serial port (keryx_console) carrying the log; the `bootloader`
+ * command there restarts into the ROM download mode for flashing (firmware/flash.sh sends it).
  */
 
 #include <math.h>
@@ -20,6 +21,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "keryx_console.h"
 #include "usb_device_uac.h"
 #include "xvf_control.h"
 
@@ -152,7 +154,7 @@ void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(SETTLE_MS));
     ESP_LOGI(TAG, "I2S slave running, %d Hz; USB sound card starts in %d s", SAMPLE_RATE, CONSOLE_GRACE_MS / 1000);
     vTaskDelay(pdMS_TO_TICKS(CONSOLE_GRACE_MS));
-    ESP_LOGI(TAG, "handing USB to TinyUSB; the serial console goes away now");
+    ESP_LOGI(TAG, "handing USB to TinyUSB; the log moves to its serial port");
 
     uac_device_config_t config = {
         .output_cb = uac_output_cb,
@@ -161,4 +163,5 @@ void app_main(void)
         .set_volume_cb = uac_set_volume_cb,
     };
     ESP_ERROR_CHECK(uac_device_init(&config));
+    ESP_ERROR_CHECK(keryx_console_start("Keryx usb-soundcard"));
 }

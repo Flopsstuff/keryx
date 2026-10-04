@@ -15,6 +15,13 @@ extern "C" {
 // The number of audio interfaces
 #define CFG_TUD_AUDIO             1
 
+#if CONFIG_UAC_CDC
+#define CFG_TUD_CDC               1
+#define CFG_TUD_CDC_RX_BUFSIZE    256
+#define CFG_TUD_CDC_TX_BUFSIZE    4096
+#define CFG_TUD_CDC_EP_BUFSIZE    64
+#endif
+
 //--------------------------------------------------------------------
 // AUDIO CLASS DRIVER CONFIGURATION
 //--------------------------------------------------------------------

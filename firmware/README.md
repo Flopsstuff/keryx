@@ -26,7 +26,9 @@ idf.py set-target esp32s3        # first build only
 idf.py -p /dev/cu.usbmodem* flash monitor
 ```
 
-or, for any project and even while `usb-soundcard` is running, `./flash.sh <project>` and then reset the XIAO.
+or, for any project, `./flash.sh <project>`. It finds the board by USB ID: if `usb-soundcard` runs, it sends the
+`bootloader` command to its serial port; with firmware that keeps the serial/JTAG console it flashes straight away;
+otherwise it asks for RESET on the XIAO.
 
 Logs go over the XIAO's USB serial/JTAG port: GPIO43/44, the UART0 pins, carry I2S data on this board.
 
@@ -59,10 +61,12 @@ XVF3800's I2S bus to the host.
 - Speaker: 48 kHz, 16-bit stereo to the headphone jack, with the host's volume and mute applied in software. The
   XVF3800 reads the same line as its echo-cancellation reference.
 - The start-up log is printed over the USB serial console; 4 s after boot TinyUSB takes the USB PHY, the console
-  disappears and the sound card appears (macOS lists it as "Keryx").
-- To flash again after that, run `./flash.sh usb-soundcard` and press RESET on the XIAO (or replug it): the script
-  catches the serial console in its first seconds and flashes then. Holding BOOT on the XIAO while it powers up did
-  not bring up the ROM download mode on our board.
+  disappears and a composite device appears: the sound card (macOS lists it as "Keryx") and a CDC serial port
+  (`/dev/cu.usbmodemkeryx_proto*` on macOS, `/dev/ttyACM*` on Linux, USB ID 303A:8000).
+- That port is `components/keryx_console`: from then on the log goes there (while a host has the port open), and it
+  takes commands, one per line: `bootloader` restarts into the ROM download mode on the serial/JTAG port, `reboot`
+  restarts the firmware. `./flash.sh` uses `bootloader`, so no buttons are needed. Without it: press RESET while
+  `./flash.sh` waits; holding BOOT on the XIAO while it powers up did not bring up the ROM download mode on our board.
 
 ## `wakeword`
 
