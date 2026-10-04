@@ -17,6 +17,19 @@ It runs anywhere on the board's network: next to Hermes (a Raspberry Pi, say) or
   `API_SERVER_HOST=0.0.0.0` if the bridge runs on another machine.
 - Python 3.10 or newer; systemd for running it as a service (Linux).
 
+## Quick start
+
+On the machine that will run the bridge (usually the Hermes host), with the board on USB:
+
+```bash
+git clone https://github.com/Flopsstuff/keryx.git && cd keryx
+./setup.sh
+```
+
+It installs the bridge and its service, asks for the xAI and Hermes keys, flashes the board with the release in
+`firmware/release/` and pairs it (asks for the Wi-Fi). `--no-flash` skips flashing, `--no-service` the systemd
+service, `--port` names the board's serial port. The sections below are the same steps one by one.
+
 ## Install
 
 On the machine that will run the bridge:
