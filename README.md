@@ -26,16 +26,7 @@ different hardware.
 
 ## How it works
 
-```
-reSpeaker Flex + XIAO ESP32S3                           voice bridge (next to Hermes, e.g. a Raspberry Pi)
-┌────────────────────────────────┐                      ┌───────────────────────────────────────────────┐
-│ 4 mics → XVF3800 (AEC, beams)  │   Wi-Fi, WebSocket   │ xAI streaming speech-to-text (Smart Turn)     │
-│ ESP32-S3: "Hey Keryx" model    │ ── 16 kHz speech ──► │        │                                      │
-│ speaker ◄── playback           │ ◄── 24 kHz speech ── │ Hermes /v1/chat/completions (streamed)        │
-└────────────────────────────────┘                      │        │ sentence by sentence                 │
-                                                        │ xAI text-to-speech                            │
-                                                        └───────────────────────────────────────────────┘
-```
+![Keryx architecture: the board's microphones go through the XVF3800 and the wake word on the ESP32-S3, then over a Wi-Fi WebSocket to the voice bridge on a Raspberry Pi 5, which runs xAI speech-to-text, Hermes and xAI text-to-speech and streams the answer back to the board's speaker](docs/images/keryx-architecture.jpg)
 
 From the end of a sentence to the first sound takes about a second plus Hermes' own thinking time. Speech costs
 roughly $0.004 per exchange with xAI ([why xAI](docs/speech-providers.md)).
