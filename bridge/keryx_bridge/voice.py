@@ -676,27 +676,21 @@ class Assistant:
             else:
                 receiver.cancel()
         except asyncio.CancelledError:
-            if receiver is not None:
-                receiver.cancel()
-            dropped = self.speaker.clear()
-            log(f"answer stopped while {conv.state}; dropped {dropped:.1f} s of queued audio", conv)
-            await self.stop_thinking(conv)
+            state = conv.state
+            dropped = await self.abandon(receiver, sentences, conv)
+            log(f"answer stopped while {state}; dropped {dropped:.1f} s of queued audio", conv)
             # Hermes keeps the whole answer in its session; tell it with the next request how much was heard
             if spoken.strip():
                 self.notes.append(f"[The user interrupted Keryx; only this much was said aloud: «{spoken.strip()}»]")
             else:
                 self.notes.append("[The user interrupted before Keryx answered the previous request]")
-            if sentences and self.tts is not None:
-                # throw away what is still being synthesized; reconnect now, while the user is talking
-                await self.tts.close()
-                asyncio.create_task(self.tts_socket(conv))
             raise
         except Exception as e:  # noqa: BLE001 - keep the conversation going
             log(f"ERROR while {conv.state}: {e!r}", conv)
-            await self.stop_thinking(conv)
             traceback.print_exc()
-            if receiver is not None:
-                receiver.cancel()
+            dropped = await self.abandon(receiver, sentences, conv)
+            if dropped:
+                log(f"dropped {dropped:.1f} s of queued audio", conv)
         finally:
             if getattr(exchange, "keepalive", None):
                 exchange.keepalive.cancel()
@@ -704,6 +698,19 @@ class Assistant:
             if conv.state != "over":
                 conv.state = "listening"
             self.report(exchange, conv)
+
+    async def abandon(self, receiver, sentences, conv):
+        """Ends an answer cut short: stops the speaker (the board gets play_stop) and throws away what TTS is still
+        synthesizing, so none of it reaches the next answer. Returns the seconds of audio dropped."""
+        if receiver is not None:
+            receiver.cancel()
+        dropped = self.speaker.clear()
+        await self.stop_thinking(conv)
+        if sentences and self.tts is not None:
+            # reconnect now, while the user is talking
+            await self.tts.close()
+            asyncio.create_task(self.tts_socket(conv))
+        return dropped
 
     async def stop_thinking(self, conv):
         if self.args.thinking_sound and not self.args.echo:
