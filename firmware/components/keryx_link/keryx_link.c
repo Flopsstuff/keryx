@@ -63,6 +63,7 @@ static volatile bool play_open;      // from play_start until `played` is due
 static volatile bool play_ending;    // play_end came: finish what is queued
 static volatile bool play_stop_req;  // play_stop came, or the bridge went away
 static volatile bool played_pending;
+static volatile int volume_pending = -1;  // a volume to report, or -1
 
 // playback task only
 static bool play_active;  // primed and playing
@@ -148,6 +149,15 @@ static void handle_message(const char *text)
         }
     } else if (strcmp(type->valuestring, "play_end") == 0) {
         play_ending = true;
+    } else if (strcmp(type->valuestring, "volume") == 0) {
+        const cJSON *value = cJSON_GetObjectItem(msg, "value"), *delta = cJSON_GetObjectItem(msg, "delta");
+        if (callbacks.volume != NULL && cJSON_IsNumber(value)) {
+            callbacks.volume(false, value->valueint);
+        } else if (callbacks.volume != NULL && cJSON_IsNumber(delta)) {
+            callbacks.volume(true, delta->valueint);
+        } else if (callbacks.get_volume != NULL) {
+            keryx_link_volume_changed(callbacks.get_volume());  // {"type":"volume"} alone asks for it
+        }
     } else if (strcmp(type->valuestring, "play_stop") == 0) {
         if (play_open) {
             play_stop_req = true;
@@ -236,6 +246,9 @@ static void send_hello(void)
     cJSON_AddStringToObject(msg, "id", keryx_net_id());
     cJSON_AddStringToObject(msg, "token", token);
     cJSON_AddStringToObject(msg, "firmware", esp_app_get_description()->version);
+    if (callbacks.get_volume != NULL) {
+        cJSON_AddNumberToObject(msg, "volume", callbacks.get_volume());
+    }
     send_json(msg);
 }
 
@@ -298,6 +311,16 @@ static void link_task(void *arg)
                     send_wake();
                 } else {
                     keryx_console_printf("bridge %s: wake not sent\n", STATE_NAMES[state]);
+                }
+            }
+            int volume = volume_pending;
+            if (volume >= 0) {
+                volume_pending = -1;
+                if (state == LINK_READY) {
+                    cJSON *msg = cJSON_CreateObject();
+                    cJSON_AddStringToObject(msg, "type", "volume");
+                    cJSON_AddNumberToObject(msg, "value", volume);
+                    send_json(msg);
                 }
             }
             if (played_pending) {
@@ -400,6 +423,14 @@ void keryx_link_audio_up(const int16_t *samples, size_t count)
     }
     up_written = w + count;
     if (streaming && link_task_handle != NULL) {
+        xTaskNotifyGive(link_task_handle);
+    }
+}
+
+void keryx_link_volume_changed(int volume)
+{
+    volume_pending = volume;
+    if (link_task_handle != NULL) {
         xTaskNotifyGive(link_task_handle);
     }
 }

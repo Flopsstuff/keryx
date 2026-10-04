@@ -36,6 +36,7 @@
 #include "driver/i2s_std.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "nvs.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/stream_buffer.h"
@@ -109,6 +110,14 @@ static volatile uint32_t i2s_tx_late;          // DMA blocks that went out as si
 
 // speaker gain in Q15, from the host's volume and mute controls
 static volatile int32_t speaker_gain = 32767;
+
+// the board's own volume, 0..100, over everything it plays; kept in NVS
+#define VOLUME_DEFAULT 100
+#define VOLUME_STEP 10
+#define VOLUME_SAVE_MS 2000     // a knob turned quickly writes flash once
+static volatile int volume = VOLUME_DEFAULT;
+static volatile int32_t volume_gain = 32767;  // Q15
+static esp_timer_handle_t volume_save_timer;
 static volatile uint32_t speaker_volume = 100;
 static volatile bool speaker_muted;
 static volatile int64_t last_playback_us;
@@ -117,6 +126,43 @@ static volatile int64_t last_playback_us;
 static volatile bool wake_sound_requested;
 static volatile bool thinking_requested;
 static volatile int64_t thinking_started_us;
+
+static void volume_save(void *arg)
+{
+    nvs_handle_t nvs;
+    if (nvs_open("keryx", NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_u8(nvs, "volume", (uint8_t)volume);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+}
+
+// 0 is silence; above it, 0.5 dB per step from -50 dB at 0 to 0 dB at 100, as the host's volume control
+static void volume_set(int value)
+{
+    value = value < 0 ? 0 : value > 100 ? 100 : value;
+    volume = value;
+    volume_gain = value == 0 ? 0 : (int32_t)(powf(10.0f, (value / 2.0f - 50.0f) / 20.0f) * 32767.0f);
+    if (volume_save_timer != NULL) {
+        esp_timer_stop(volume_save_timer);
+        esp_timer_start_once(volume_save_timer, VOLUME_SAVE_MS * 1000LL);
+    }
+    keryx_link_volume_changed(value);
+}
+
+static void volume_load(void)
+{
+    nvs_handle_t nvs;
+    uint8_t stored = VOLUME_DEFAULT;
+    if (nvs_open("keryx", NVS_READONLY, &nvs) == ESP_OK) {
+        nvs_get_u8(nvs, "volume", &stored);
+        nvs_close(nvs);
+    }
+    const esp_timer_create_args_t timer = {.callback = volume_save, .name = "volume_save"};
+    esp_timer_create(&timer, &volume_save_timer);
+    volume = stored > 100 ? VOLUME_DEFAULT : stored;
+    volume_gain = volume == 0 ? 0 : (int32_t)(powf(10.0f, (volume / 2.0f - 50.0f) / 20.0f) * 32767.0f);
+}
 
 static void update_speaker_gain(void)
 {
@@ -240,6 +286,7 @@ static void playback_task(void *arg)
         }
 
         int32_t gain = speaker_gain;
+        const int64_t master = volume_gain;
         for (int f = 0; f < BLOCK_FRAMES; f++) {
             int32_t sound = bridge[f];  // the bridge's answer, mono, not under the host's volume
             if (wake_pos < KERYX_SOUND_WAKE_LEN) {
@@ -257,6 +304,7 @@ static void playback_task(void *arg)
             for (int c = 0; c < 2; c++) {
                 // Q15 gain; stays inside int32 even at full scale
                 int64_t v = (int64_t)in[2 * f + c] * gain * 2 + ((int64_t)sound << 16);
+                v = v * master >> 15;
                 out[2 * f + c] = v > INT32_MAX ? INT32_MAX : v < INT32_MIN ? INT32_MIN : (int32_t)v;
             }
         }
@@ -556,6 +604,25 @@ static bool console_command(const char *cmd)
         sound_thinking(cmd[6] == 't');
         return true;
     }
+    if (strcmp(cmd, "volume") == 0 || strncmp(cmd, "volume ", 7) == 0) {
+        const char *arg = cmd + 6;
+        while (*arg == ' ') {
+            arg++;
+        }
+        if (strcmp(arg, "up") == 0 || strcmp(arg, "down") == 0) {
+            volume_set(volume + (arg[0] == 'u' ? VOLUME_STEP : -VOLUME_STEP));
+        } else if (*arg != '\0') {
+            char *end;
+            long v = strtol(arg, &end, 10);
+            if (*end != '\0' || v < 0 || v > 100) {
+                keryx_console_printf("error usage: volume [0-100 | up | down]\n");
+                return true;
+            }
+            volume_set((int)v);
+        }
+        keryx_console_printf("ok volume %d\n", volume);
+        return true;
+    }
     if (strncmp(cmd, "xvf ", 4) == 0) {
         xvf_command(cmd + 4);
         return true;
@@ -576,6 +643,17 @@ static bool console_command(const char *cmd)
                          op == OP_L_REFERENCE ? "echo reference" : op == OP_L_MIC ? "microphone 0, before AEC" :
                          "processed beam", now[0], now[1], err == ESP_OK && memcmp(now, op, 2) == 0 ? "" : " FAILED");
     return true;
+}
+
+// {"type":"volume"} from the bridge
+static void bridge_volume(bool relative, int amount)
+{
+    volume_set(relative ? volume + amount : amount);
+}
+
+static int get_volume(void)
+{
+    return volume;
 }
 
 // {"type":"sound"} from the bridge
@@ -632,7 +710,9 @@ void app_main(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Wi-Fi did not start: %s", esp_err_to_name(err));
     }
-    const keryx_link_callbacks_t link_callbacks = {.sound = bridge_sound};
+    volume_load();  // NVS is up since keryx_net_start()
+    const keryx_link_callbacks_t link_callbacks = {.sound = bridge_sound, .volume = bridge_volume,
+                                                   .get_volume = get_volume};
     err = keryx_link_start(&link_callbacks);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "bridge link did not start: %s", esp_err_to_name(err));

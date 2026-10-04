@@ -5,6 +5,7 @@
  * takes commands from the host, one per line:
  *   bootloader  restart into the ROM download mode, on the USB serial/JTAG port, ready for esptool
  *   reboot      restart the firmware
+ *   top [seconds]  how busy each core was and which tasks took the time (default 5 s)
  *   log <tag|*> <none|error|warn|info|debug|verbose>   change a log level until the next restart
  * Output is dropped while no host has the port open (DTR low), so writing never stalls the audio.
  */
