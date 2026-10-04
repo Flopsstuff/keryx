@@ -103,7 +103,8 @@ predecessors.
   later, and 1.9 MB for a filesystem.
 - The voice bridge (`components/keryx_link`): a WebSocket client to the `bridge` URL, connected all the time
   (ping every 10 s, reconnects every 2 s). Protocol v1 below. Wi-Fi power save (modem sleep, DTIM 3: pings take
-  ~260 ms) goes off at a wake and back on 5 s after the conversation. The report adds a line for the link: state,
+  ~260 ms) goes off at a wake or a `play_start` (the bridge may speak first, with no wake) and back on 5 s after
+  the stream and the playback have ended. The report adds a line for the link: state,
   frames up, bytes down, playback underruns.
 - Volume: the board's own, 0–100 over everything it plays (the bridge's answers, its sounds, USB audio): 0 is
   silence, then 0.5 dB a step up to 0 dB at 100, kept in NVS (saved 2 s after the last change). `volume`,

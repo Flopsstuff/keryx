@@ -8,7 +8,8 @@
  *                     {"type":"play_start","rate":24000|16000}, binary PCM16 LE mono, {"type":"play_end"},
  *                     {"type":"play_stop"}, {"type":"volume","value":0..100} or {"type":"volume","delta":±n}
  *
- * The bridge's URL and token come from keryx_net. Wi-Fi power save is off while a conversation runs.
+ * The bridge's URL and token come from keryx_net. Wi-Fi power save is off from a wake or a play_start (the bridge may
+ * start an answer on its own) until 5 s after the stream and the playback have ended.
  */
 #pragma once
 

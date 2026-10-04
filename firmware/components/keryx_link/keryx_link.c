@@ -342,6 +342,8 @@ static void link_task(void *arg)
         xSemaphoreGive(client_lock);
 
         if (streaming || play_open) {
+            // also for answers the bridge starts on its own, with no wake before them (Hermes speaking first)
+            power_save(false);
             last_activity_us = now;
         } else if (power_save_off && now - last_activity_us > POWER_SAVE_AFTER_MS * 1000LL) {
             power_save(true);
