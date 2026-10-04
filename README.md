@@ -1,9 +1,11 @@
 # Keryx
 
-**A "Hey Keryx" voice speaker for the [Hermes agent](https://github.com/NousResearch/hermes-agent).** A XIAO
-ESP32S3 on a Seeed reSpeaker Flex listens for its wake word on the device, then lets you talk to Hermes out loud:
-your request goes over Wi-Fi to a small voice bridge next to Hermes, and the answer comes back as speech. A sibling
-of [RaspiDR](https://github.com/Flopsstuff/raspidr) on different hardware.
+**A "Hey Keryx" voice speaker for the [Hermes agent](https://github.com/NousResearch/hermes-agent).** A
+[XIAO ESP32S3](https://wiki.seeedstudio.com/xiao_esp32s3_getting_started/) on a
+[Seeed reSpeaker Flex XVF3800](https://wiki.seeedstudio.com/respeaker_flex_introduction/) listens for its wake word
+on the device, then lets you talk to Hermes out loud: your request goes over Wi-Fi to a small voice bridge next to
+Hermes, and the answer comes back as speech. A sibling of [RaspiDR](https://github.com/Flopsstuff/raspidr) on
+different hardware.
 
 *Keryx* (κῆρυξ) is Greek for a herald — the one who speaks aloud for Hermes.
 
