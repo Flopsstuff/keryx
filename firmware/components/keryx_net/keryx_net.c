@@ -36,7 +36,13 @@ static esp_timer_handle_t retry_timer;
 static int retry_s = RETRY_MIN_S;
 static volatile bool connected;
 static bool started;
-static char start_error[64];  // why keryx_net_start() failed, for `status`
+static char start_error[64];
+static void (*status_hook)(void);
+
+void keryx_net_status_hook(void (*print)(void))
+{
+    status_hook = print;
+}  // why keryx_net_start() failed, for `status`
 
 const char *keryx_net_id(void)
 {
@@ -362,6 +368,9 @@ static void command_status(void)
     bool url_set = setting_get("bridge", url, sizeof(url));
     bool token_set = setting_get("token", token, sizeof(token));
     keryx_console_printf("bridge=%s token=%s\n", url_set ? url : "(not set)", token_set ? "(set)" : "(not set)");
+    if (status_hook != NULL) {
+        status_hook();
+    }
     keryx_console_printf("ok\n");
 }
 

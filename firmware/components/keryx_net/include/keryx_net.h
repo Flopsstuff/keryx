@@ -33,3 +33,6 @@ const char *keryx_net_id(void);
 bool keryx_net_bridge(char *url, size_t url_size, char *token, size_t token_size);
 
 bool keryx_net_connected(void);
+
+// Adds the application's own lines to `status`, before its final `ok`.
+void keryx_net_status_hook(void (*print)(void));

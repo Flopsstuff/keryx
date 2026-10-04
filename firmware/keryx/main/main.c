@@ -102,6 +102,7 @@ static volatile int64_t last_mic_read_us;      // the host is recording while th
 static volatile uint32_t mic_dropped_bytes;    // dropped for lag
 static volatile uint32_t mic_short_reads;      // the callback had less than asked for
 static volatile uint32_t capture_overruns;     // blocks that did not fit into the stream buffer
+static volatile int64_t last_i2s_read_us;      // the XVF3800 clocks I2S: no reads means it runs other firmware
 static volatile uint32_t play_underruns;       // the host's audio ran out while it was still playing
 static volatile uint32_t play_overflows;       // packets that did not fit into the playback buffer
 static volatile uint32_t play_dropped_bytes;   // dropped because the host ran ahead
@@ -344,6 +345,7 @@ static void capture_task(void *arg)
             continue;
         }
         int64_t t0 = esp_timer_get_time();
+        last_i2s_read_us = t0;
 
         // the top 16 bits are what goes to the host; the right slot is the ASR output the model learned from
         for (int i = 0; i < BLOCK_FRAMES * 2; i++) {
@@ -645,6 +647,21 @@ static bool console_command(const char *cmd)
     return true;
 }
 
+// `status`: is the XVF3800 there, on which firmware, and does it clock I2S (only its I2S firmware does)
+static void status_xvf(void)
+{
+    uint8_t version[3];
+    bool answers = xvf_read(48, 0, version, sizeof(version)) == ESP_OK;  // VERSION
+    bool i2s = esp_timer_get_time() - last_i2s_read_us < 1000000;
+    if (answers) {
+        keryx_console_printf("xvf=ok version=%u.%u.%u i2s=%s\n", version[0], version[1], version[2],
+                             i2s ? "running" : "no_clock");
+    } else {
+        keryx_console_printf("xvf=no_answer i2s=%s\n", i2s ? "running" : "no_clock");
+    }
+    keryx_console_printf("volume=%d\n", volume);
+}
+
 // {"type":"volume"} from the bridge
 static void bridge_volume(bool relative, int amount)
 {
@@ -711,6 +728,7 @@ void app_main(void)
         ESP_LOGE(TAG, "Wi-Fi did not start: %s", esp_err_to_name(err));
     }
     volume_load();  // NVS is up since keryx_net_start()
+    keryx_net_status_hook(status_xvf);
     const keryx_link_callbacks_t link_callbacks = {.sound = bridge_sound, .volume = bridge_volume,
                                                    .get_volume = get_volume};
     err = keryx_link_start(&link_callbacks);

@@ -3,6 +3,24 @@
 ESP-IDF projects for the XIAO ESP32S3 on the reSpeaker Flex. The XVF3800 has to run the I2S firmware; see
 [I2S mode](../docs/respeaker-flex-xvf3800.md#i2s-mode) in the board notes.
 
+## Installing a release (no ESP-IDF)
+
+1. **The XVF3800 on the I2S firmware** (once per reSpeaker Flex). The Flex ships with USB firmware, which does not
+   clock the I2S bus the XIAO listens to. Get `respeaker_flex_i2s_c48k2ch_v1.0.4.bin` from
+   [the reSpeaker Flex repository](https://github.com/respeaker/reSpeaker_Flex) (`xmos_firmwares/i2s`), connect the
+   **Flex's** USB-C port (next to RST, not the XIAO's) and run
+   `dfu-util -R -e -a 1 -D respeaker_flex_i2s_c48k2ch_v1.0.4.bin` (`brew install dfu-util` / `apt install
+   dfu-util`); the board then disappears from USB. Going back and more:
+   [Switching firmware](../docs/respeaker-flex-xvf3800.md#switching-firmware). `status` on the board's console tells
+   whether this is done: `xvf=ok version=1.0.4 i2s=running`; `xvf=no_answer` or `i2s=no_clock` mean it is not.
+2. **The XIAO**, through its own USB-C port: `python firmware/flash_release.py` with a Python that has esptool
+   (`pip install esptool`; the repository's `setup.sh` uses the bridge's venv). It finds the board by USB ID, puts
+   it into the bootloader itself if it already runs Keryx (otherwise it asks for BOOT + RESET), writes
+   `firmware/release/` part by part, so the pairing in NVS survives, and waits until the board reports the new
+   version. `firmware/release/` holds only the latest release (`*.bin` in Git LFS: `git lfs pull` first);
+   `manifest.json` there also suits ESP Web Tools. `firmware/release.sh` builds a new one from a committed tree.
+3. **Pairing** with the voice bridge: `keryx-bridge pair` (see `bridge/`).
+
 ## Toolchain
 
 ESP-IDF v5.5.5, installed once:
@@ -118,9 +136,10 @@ predecessors.
   `config`, `erase`, `wifi scan`, `status`, `net check <host> <port>` (can the board open a TCP connection there:
   is the bridge reachable from this network?); answers end with an `ok` or `error` line. The settings live in NVS and
   survive flashing; the board joins Wi-Fi at start-up and after `set password`, retries with back-off (1 to 30 s)
-  and reports `wifi connected ip=… rssi=…` / `wifi disconnected reason=…`. `status` also shows the board's id
-  (`keryx-` and the end of its MAC, also its USB serial number, so each board has its own port name), the firmware
-  version and free memory. The XIAO needs its U.FL antenna: without it networks show at about −92 dBm.
+  and reports `wifi connected ip=… rssi=…` / `wifi disconnected reason=…`. `status` also shows the XVF3800
+  (`xvf=ok version=… i2s=running`, see Installing), the volume, the board's id (`keryx-` and the end of its MAC,
+  also its USB serial number, so each board has its own port name), the firmware version (the last commit that
+  touched `firmware/`, outside `release/`) and free memory. The XIAO needs its U.FL antenna: without it networks show at about −92 dBm.
 - Memory: the wake word's weights and state take ~160 KB of internal RAM, and Wi-Fi needs its RX buffers there, so
   the 8 MB PSRAM is on for everything large, Wi-Fi, FreeRTOS and heap code stays in flash instead of IRAM, and Wi-Fi
   keeps 8 static RX buffers. About 33 KB of internal RAM stays free with Wi-Fi connected. The app builds for size
