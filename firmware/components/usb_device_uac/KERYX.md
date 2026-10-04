@@ -15,4 +15,7 @@ Copied from the ESP Component Registry, version 1.3.1
 - `tusb/usb_descriptors.c`: the serial number string comes from `uac_serial_number()`, a weak function returning
   `CONFIG_UAC_TUSB_SERIAL_NUM` that the application can override.
 
+- `Kconfig.uac`: the USB task priorities may go up to 24 (upstream: 15), so that USB audio can run above lwIP's
+  task (18) and Wi-Fi traffic does not starve it.
+
 When updating to a newer upstream version, copy it over this directory and re-apply the changes above.

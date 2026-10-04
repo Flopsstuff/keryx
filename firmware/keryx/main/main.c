@@ -21,6 +21,8 @@
  * the USB serial/JTAG console for a few seconds after boot, then TinyUSB takes it for the sound card and the
  * serial port; the `bootloader` command there restarts into the ROM download mode (firmware/flash.sh sends it).
  * The same port pairs the board with the voice bridge: Wi-Fi and bridge settings, kept in NVS (keryx_net).
+ * Over Wi-Fi the board talks to the bridge (keryx_link): a wake sends the 16 kHz ASR audio from just before it
+ * until the bridge stops listening, and the bridge's answer is mixed into the playback like the host's.
  */
 
 #include <math.h>
@@ -38,6 +40,7 @@
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
 #include "keryx_console.h"
+#include "keryx_link.h"
 #include "keryx_net.h"
 #include "keryx_sounds.h"
 #include "kww_decimate.h"
@@ -96,6 +99,7 @@ static volatile uint32_t capture_overruns;     // blocks that did not fit into t
 static volatile uint32_t play_underruns;       // the host's audio ran out while it was still playing
 static volatile uint32_t play_overflows;       // packets that did not fit into the playback buffer
 static volatile uint32_t play_dropped_bytes;   // dropped because the host ran ahead
+static volatile uint32_t i2s_tx_late;          // DMA blocks that went out as silence: the playback task was late
 
 // speaker gain in Q15, from the host's volume and mute controls
 static volatile int32_t speaker_gain = 32767;
@@ -113,6 +117,12 @@ static void update_speaker_gain(void)
     // the component maps the host's -50..0 dB volume range onto 0..100
     double db = speaker_volume / 2.0 - 50.0;
     speaker_gain = speaker_muted || speaker_volume == 0 ? 0 : (int32_t)(pow(10.0, db / 20.0) * 32767.0);
+}
+
+static bool IRAM_ATTR on_tx_late(i2s_chan_handle_t handle, i2s_event_data_t *event, void *ctx)
+{
+    i2s_tx_late++;
+    return false;
 }
 
 static void i2s_start(void)
@@ -136,6 +146,8 @@ static void i2s_start(void)
     };
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(i2s_tx, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(i2s_rx, &std_cfg));
+    const i2s_event_callbacks_t tx_callbacks = {.on_send_q_ovf = on_tx_late};
+    ESP_ERROR_CHECK(i2s_channel_register_event_callback(i2s_tx, &tx_callbacks, NULL));
     ESP_ERROR_CHECK(i2s_channel_enable(i2s_tx));
     ESP_ERROR_CHECK(i2s_channel_enable(i2s_rx));
 }
@@ -180,6 +192,9 @@ static void playback_task(void *arg)
             }
         }
         memset((uint8_t *)in + got, 0, sizeof(in) - got);
+        static int16_t bridge[BLOCK_FRAMES];
+        memset(bridge, 0, sizeof(bridge));
+        keryx_link_play(bridge, BLOCK_FRAMES);
 
         if (wake_sound_requested) {
             wake_sound_requested = false;
@@ -188,6 +203,10 @@ static void playback_task(void *arg)
         int host_peak = 0;
         for (int i = 0; i < BLOCK_FRAMES * 2; i++) {
             int level = in[i] < 0 ? -in[i] : in[i];
+            host_peak = level > host_peak ? level : host_peak;
+        }
+        for (int i = 0; i < BLOCK_FRAMES; i++) {
+            int level = bridge[i] < 0 ? -bridge[i] : bridge[i];
             host_peak = level > host_peak ? level : host_peak;
         }
         if (thinking_requested && (host_peak > HOST_AUDIBLE ||
@@ -208,7 +227,7 @@ static void playback_task(void *arg)
 
         int32_t gain = speaker_gain;
         for (int f = 0; f < BLOCK_FRAMES; f++) {
-            int32_t sound = 0;
+            int32_t sound = bridge[f];  // the bridge's answer, mono, not under the host's volume
             if (wake_pos < KERYX_SOUND_WAKE_LEN) {
                 sound += keryx_sound_wake[wake_pos++];
             }
@@ -281,6 +300,7 @@ static void capture_task(void *arg)
             peak_level = level > peak_level ? level : peak_level;
         }
         size_t n16 = kww_decimate(&decimate, asr, BLOCK_FRAMES, audio16);
+        keryx_link_audio_up(audio16, n16);
         int nframes = kww_frontend_process(&frontend, audio16, n16, frames, 4);
         for (int f = 0; f < nframes; f++) {
             float score;
@@ -296,6 +316,7 @@ static void capture_task(void *arg)
                 last_detection = now;
                 keryx_console_printf("wake score=%.3f\n", score);
                 wake_sound_requested = true;
+                keryx_link_wake(score);
             }
         }
         busy_us += esp_timer_get_time() - t0;
@@ -307,20 +328,23 @@ static void capture_task(void *arg)
             bool playing = now - last_playback_us < PLAYBACK_IDLE_MS * 1000LL;
             ESP_LOGI(TAG, "peak score %.3f | ASR peak %.1f dBFS | %.2f ms per 5 ms | USB mic %s, lag %u ms, "
                           "dropped %u ms, short reads %u, overruns %u | USB speaker %s, queued %u ms, "
-                          "underruns %u, overflows %u, dropped %u ms", peak_score,
+                          "underruns %u, overflows %u, dropped %u ms | I2S late %u", peak_score,
                      20.0f * log10f((peak_level + 1) / 32768.0f), busy_us / 1000.0f / blocks,
                      recording ? "on" : "off", (unsigned)(xStreamBufferBytesAvailable(mic_buffer) / MS_BYTES),
                      (unsigned)(mic_dropped_bytes / MS_BYTES), (unsigned)mic_short_reads,
                      (unsigned)capture_overruns, playing ? "on" : "off",
                      (unsigned)(xStreamBufferBytesAvailable(play_buffer) / MS_BYTES), (unsigned)play_underruns,
-                     (unsigned)play_overflows, (unsigned)(play_dropped_bytes / MS_BYTES));
+                     (unsigned)play_overflows, (unsigned)(play_dropped_bytes / MS_BYTES), (unsigned)i2s_tx_late);
             last_report = now;
             busy_us = 0;
             blocks = 0;
             peak_level = 0;
             peak_score = 0.0f;
+            static char link_line[160];
+            keryx_link_report(link_line, sizeof(link_line));
+            ESP_LOGI(TAG, "%s", link_line);
             mic_dropped_bytes = mic_short_reads = capture_overruns = 0;
-            play_underruns = play_overflows = play_dropped_bytes = 0;
+            play_underruns = play_overflows = play_dropped_bytes = i2s_tx_late = 0;
         }
     }
 }
@@ -418,6 +442,16 @@ const char *uac_serial_number(void)
 static bool console_command(const char *cmd)
 {
     if (keryx_net_command(cmd)) {
+        if (strncmp(cmd, "set bridge ", 11) == 0 || strncmp(cmd, "set token ", 10) == 0 || strcmp(cmd, "erase") == 0) {
+            keryx_link_restart();
+        }
+        return true;
+    }
+    if (strcmp(cmd, "wake") == 0) {
+        // as if the wake word fired, for testing the bridge without saying it
+        wake_sound_requested = true;
+        keryx_link_wake(1.0f);
+        keryx_console_printf("wake score=1.000 (console)\n");
         return true;
     }
     if (strcmp(cmd, "sound wake") == 0) {
@@ -440,6 +474,16 @@ static bool console_command(const char *cmd)
     keryx_console_printf("left capture channel: %s (mux %u, %u)%s\n", op == OP_L_REFERENCE ? "echo reference" :
                          "processed beam", now[0], now[1], err == ESP_OK && memcmp(now, op, 2) == 0 ? "" : " FAILED");
     return true;
+}
+
+// {"type":"sound"} from the bridge
+static void bridge_sound(const char *name)
+{
+    if (strcmp(name, "wake") == 0) {
+        wake_sound_requested = true;
+    } else if (strcmp(name, "thinking") == 0 || strcmp(name, "stop") == 0) {
+        sound_thinking(name[0] == 't');
+    }
 }
 
 void app_main(void)
@@ -485,5 +529,10 @@ void app_main(void)
     err = keryx_net_start();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Wi-Fi did not start: %s", esp_err_to_name(err));
+    }
+    const keryx_link_callbacks_t link_callbacks = {.sound = bridge_sound};
+    err = keryx_link_start(&link_callbacks);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "bridge link did not start: %s", esp_err_to_name(err));
     }
 }

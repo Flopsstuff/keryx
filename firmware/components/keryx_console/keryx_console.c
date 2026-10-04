@@ -70,6 +70,23 @@ static void restart_into_bootloader(void)
     esp_restart();
 }
 
+// "log <tag|*> <none|error|warn|info|debug|verbose>"
+static void set_log_level(const char *args)
+{
+    static const char *const LEVELS[] = {"none", "error", "warn", "info", "debug", "verbose"};
+    char tag[32], level[16];
+    if (sscanf(args, "%31s %15s", tag, level) == 2) {
+        for (int i = 0; i < 6; i++) {
+            if (strcmp(level, LEVELS[i]) == 0) {
+                esp_log_level_set(tag, (esp_log_level_t)i);
+                keryx_console_printf("ok log %s %s\n", tag, level);
+                return;
+            }
+        }
+    }
+    keryx_console_printf("error usage: log <tag|*> <none|error|warn|info|debug|verbose>\n");
+}
+
 static void run_command(const char *cmd)
 {
     if (strcmp(cmd, "bootloader") == 0) {
@@ -78,6 +95,8 @@ static void run_command(const char *cmd)
         ESP_LOGI(TAG, "rebooting");
         vTaskDelay(pdMS_TO_TICKS(100));
         esp_restart();
+    } else if (strncmp(cmd, "log ", 4) == 0) {
+        set_log_level(cmd + 4);
     } else if (cmd[0] != '\0' && (app_command == NULL || !app_command(cmd))) {
         keryx_console_printf("unknown command: %s (try: bootloader, reboot)\n", cmd);
     }

@@ -41,3 +41,15 @@ CONFIG_ESP_WIFI_RX_IRAM_OPT=n
 CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
 CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
+# allocations above 2 KB go to PSRAM (default 16 KB): the WebSocket client's buffers among them
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=2048
+# tasks that never write flash may keep their stacks in PSRAM (xTaskCreate...WithCaps)
+CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
+# sending the uplink must not wait while the receive side holds back the bridge's audio
+CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y
+# USB audio runs every 1 ms and briefly; above lwIP (18), or Wi-Fi traffic starves it. lwIP stays on core 0 with
+# Wi-Fi, leaving core 1 to capture and playback.
+CONFIG_UAC_TINYUSB_TASK_PRIORITY=20
+CONFIG_UAC_MIC_TASK_PRIORITY=20
+CONFIG_UAC_SPK_TASK_PRIORITY=20
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y

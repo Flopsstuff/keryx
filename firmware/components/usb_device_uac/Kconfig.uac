@@ -80,7 +80,7 @@ menu "USB Device UAC"
             config UAC_TINYUSB_TASK_PRIORITY
                 int "Tinyusb task priority"
                 default 5
-                range 1 15
+                range 1 24
 
             config UAC_TINYUSB_TASK_CORE
                 int "Tinyusb task core"
@@ -90,7 +90,7 @@ menu "USB Device UAC"
             config UAC_SPK_TASK_PRIORITY
                 int "SPK task priority"
                 default 5
-                range 1 15
+                range 1 24
                 depends on UAC_SPEAKER_CHANNEL_NUM != 0
 
             config UAC_SPK_TASK_CORE
@@ -102,7 +102,7 @@ menu "USB Device UAC"
             config UAC_MIC_TASK_PRIORITY
                 int "MIC task priority"
                 default 5
-                range 1 15
+                range 1 24
                 depends on UAC_MIC_CHANNEL_NUM != 0
 
             config UAC_MIC_TASK_CORE

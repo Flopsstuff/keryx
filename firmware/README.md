@@ -119,6 +119,35 @@ predecessors.
   keeps 8 static RX buffers. About 33 KB of internal RAM stays free with Wi-Fi connected. The app builds for size
   except the wake word and its frontend (`-O2`); `partitions.csv` has two 3 MB app slots, for updates over Wi-Fi
   later, and 1.9 MB for a filesystem.
-- Wi-Fi power save is on (modem sleep, DTIM 3): pings take ~260 ms. Streaming will have to turn it off while it runs.
+- The voice bridge (`components/keryx_link`): a WebSocket client to the `bridge` URL, connected all the time
+  (ping every 10 s, reconnects every 2 s). Protocol v1 below. Wi-Fi power save (modem sleep, DTIM 3: pings take
+  ~260 ms) goes off at a wake and back on 5 s after the conversation. The report adds a line for the link: state,
+  frames up, bytes down, playback underruns.
+- More console commands: `wake` acts as if the wake word fired (to test the bridge without saying it), and
+  `log <tag|*> <none|error|warn|info|debug>` changes a log level until the next restart (the WebSocket library's
+  own log is off: it reports every failed attempt while the bridge is down).
+- Tasks: core 1 has capture (wake word) and playback; core 0 USB, Wi-Fi, lwIP, the WebSocket client and the console.
+  USB audio runs at priority 20, above lwIP (18): at 5 it starved during Wi-Fi traffic and dropped audio.
+
+### Bridge protocol v1
+
+The board connects to `ws://…` (the `bridge` setting) and keeps the connection. Text frames are JSON; binary frames
+are PCM16 little-endian mono.
+
+| Direction | Message | Meaning |
+|---|---|---|
+| board → bridge | `{"type":"hello","id":…,"token":…,"firmware":…}` | first message; a wrong token: close with 4001 |
+| bridge → board | `{"type":"ready"}` | accepted |
+| board → bridge | `{"type":"wake","score":0.97,"preroll_ms":500}` | the wake word fired; audio follows |
+| board → bridge | binary, 16 kHz, 20 ms (640 bytes) | the ASR beam: `preroll_ms` from before the wake, then live, until `listen_stop`. A wake during a stream sends `preroll_ms: 0` and the stream goes on unbroken |
+| bridge → board | `{"type":"listen_stop"}` | stop streaming (the board stops by itself after 2 min) |
+| bridge → board | `{"type":"sound","name":"wake"\|"thinking"\|"stop"}` | the board's own sounds |
+| bridge → board | `{"type":"play_start","rate":24000}`, binary, `{"type":"play_end"}` | an answer, 24 or 16 kHz, any frame size, faster than real time is fine: the board buffers 10 s (holding back TCP beyond that), starts once 150 ms are queued and upsamples to 48 kHz |
+| bridge → board | `{"type":"play_stop"}` | cut the answer now (10 ms fade) |
+| board → bridge | `{"type":"played"}` | the answer has really finished playing, or was cut |
+
+Measured against a test server, through the echo reference (`loop on`): 24 and 16 kHz answers clean (residual
+−40 dB), `played` 3.06 s after the first byte of a 3 s answer, 90–170 ms after `play_stop`; uplink frames 18 ms
+apart on average, at most ~40 ms.
 - The host should send 48 kHz: macOS converting 16 kHz on the fly (PortAudio with its default small blocks) breaks
   up the sound on this device; 24 and 44.1 kHz were fine.
