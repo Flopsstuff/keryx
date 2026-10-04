@@ -16,7 +16,7 @@ Hermes' OpenAI-compatible API, turns the reply into speech with xAI TTS and stre
 | `bridge/` | the voice bridge, an installable Python package (`keryx_bridge`, command `keryx-bridge`) run as a systemd user service |
 | `wakeword/` | data generation, training (PyTorch) and C export of the wake word model |
 | `tools/` | Mac bench tools: `converse.py` (the bridge pipeline over the board's USB sound card), `listen.py`, the mic-array `dashboard`, `xvf` control client |
-| `setup.sh`, `say.sh`, `set_volume.sh` | one-step install on the bridge host; speak / set the volume through a running bridge |
+| `setup.sh`, `say.sh`, `set_volume.sh`, `mute.sh`, `unmute.sh` | one-step install on the bridge host; speak, set the volume, mute the microphone through a running bridge |
 
 ## Documentation
 
@@ -132,9 +132,9 @@ logging) behind three adapters — a microphone, a speaker and a board — so `s
   frames) and fuzzy-matches the words against what Keryx said;
 - the system prompt (`keryx_bridge/prompts/voice.md` unless `KERYX_SYSTEM_PROMPT[_PATH]`) ends with a "Device
   status" section the bridge fills per request: board volume, where the bridge's code/config/service are, and
-  `set_volume.sh` / `say.sh` so Hermes on the same host can use them;
+  `set_volume.sh` / `say.sh` / `mute.sh` so Hermes on the same host can use them;
 - HTTP control on the bridge port with the board token: `GET /keryx/status`, `POST /keryx/volume`,
-  `POST /keryx/say`.
+  `POST /keryx/say`, `POST /keryx/mute` (a timed mute is the bridge's timer, lost if the bridge restarts).
 
 Hermes is reached only through its API server (`/v1/chat/completions`, streamed, with `hermes.tool.progress`
 events); per-request options go in `model_options`. Latency is dominated by Hermes' agent loop, not by the audio

@@ -6,12 +6,15 @@
   keryx-bridge status            what a running bridge on this machine knows about the board
   keryx-bridge volume 60|+10|-10 set the board's volume through a running bridge
   keryx-bridge say TEXT          say something on the board through a running bridge (TEXT or stdin)
+  keryx-bridge mute [30m|2h]     stop the board listening (for a while: s, m or h; a bare number is minutes)
+  keryx-bridge unmute            start it listening again
 """
 
 import argparse
 import asyncio
 import getpass
 import json
+import re
 import socket
 import sys
 import time
@@ -219,6 +222,16 @@ def main():
         value = rest[0]
         body = {"delta": int(value)} if value[0] in "+-" else {"value": int(value)}
         status, answer = asyncio.run(control("POST", "volume", body))
+        print(json.dumps(answer, ensure_ascii=False))
+        sys.exit(0 if status == 200 else 1)
+    elif command in ("mute", "unmute") and len(rest) <= (1 if command == "mute" else 0):
+        body = {"value": command == "mute"}
+        if rest:
+            match = re.fullmatch(r"(\d+(?:\.\d+)?)([smh]?)", rest[0])
+            if not match:
+                sys.exit(f"bad duration {rest[0]!r}: use 90s, 30m, 2h or a number of minutes")
+            body["for"] = float(match[1]) * {"s": 1, "m": 60, "h": 3600, "": 60}[match[2]]
+        status, answer = asyncio.run(control("POST", "mute", body))
         print(json.dumps(answer, ensure_ascii=False))
         sys.exit(0 if status == 200 else 1)
     elif command == "say":

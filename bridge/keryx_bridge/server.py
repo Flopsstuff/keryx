@@ -9,6 +9,8 @@ board → bridge
                                                    running stream comes with preroll_ms 0 and no extra audio
   {"type":"played"}                                the board has finished playing (after play_end or play_stop)
   {"type":"volume","value":N}                      the board's volume after any change (also "volume" in hello)
+  {"type":"mute","value":true|false}               the microphone muted or not, after any change (also "muted" in
+                                                   hello); muted, the board neither wakes nor streams
 bridge → board
   {"type":"ready"}                                 the answer to a good hello
   {"type":"listen_stop"}                           stop streaming the microphone
@@ -16,10 +18,13 @@ bridge → board
   {"type":"play_start","rate":24000}, binary PCM16 mono of any size, {"type":"play_end"}   one answer
   {"type":"play_stop"}                             cut the answer now
   {"type":"volume","value":0..100} or "delta":±n   set the board's volume (100 = 0 dB, 0.5 dB a step)
+  {"type":"mute","value":true|false}               mute or unmute the microphone (only the microphone: playback
+                                                   goes on); without "value" a query
 
 HTTP control on the same port, with the same token as `Authorization: Bearer …`: GET <path>/status;
 POST <path>/volume with {"value": 0..100} or {"delta": n}, which answers with the volume the board reports back;
-POST <path>/say with {"text": "…"}, which says it on the board and answers once it has been played.
+POST <path>/say with {"text": "…"}, which says it on the board and answers once it has been played;
+POST <path>/mute with {"value": true|false} and optionally {"for": seconds}, after which the bridge unmutes.
 
 The bridge checks the token against the KERYX_BRIDGE_TOKEN setting. Everything else (Hermes, xAI, the options)
 lives in voice.py.
@@ -54,6 +59,8 @@ BRIDGE_LINES = [
     f"code: cd {REPO} && bridge/install.sh (restarts the service, which ends the current conversation)",
 ] if os.environ.get("INVOCATION_ID") else []) + ([
     f"volume control: {REPO}/set_volume.sh 0..100|+n|-n (no argument prints the current volume)",
+    f"microphone control: {REPO}/mute.sh [30m|2h] stops Keryx listening (optionally for a while), {REPO}/unmute.sh "
+    "starts it again; when the user asks you not to listen, say a short goodbye first, then mute",
     f'speak on your own: {REPO}/say.sh "text" (says it on the speaker, after any answer in progress; for reminders, '
     "timers or anything the user asked to be told later)",
 ] if INSTALLED else [])
@@ -103,6 +110,9 @@ class Link:
         self.firmware = None
         self.volume = None  # 0..100 as the board last reported it
         self.volume_changed = asyncio.Event()
+        self.muted = None  # the microphone, as the board last reported it
+        self.muted_until = None  # epoch seconds when the bridge will unmute, for a timed mute
+        self.mute_changed = asyncio.Event()
 
     async def send(self, message, conversation=None):
         if self.ws is None or self.ws.closed:
@@ -124,9 +134,27 @@ class Link:
         lines = []
         if self.ws is None:
             lines.append("board: not connected")
-        elif self.volume is not None:
-            lines.append(f"volume: {self.volume} of 100 (100 is the loudest; 0.5 dB a step)")
+        else:
+            if self.volume is not None:
+                lines.append(f"volume: {self.volume} of 100 (100 is the loudest; 0.5 dB a step)")
+            if self.muted is not None:
+                until = (f" until {time.strftime('%H:%M', time.localtime(self.muted_until))}"
+                         if self.muted and self.muted_until else "")
+                lines.append(f"microphone: {'muted' + until if self.muted else 'on'}")
         return lines + BRIDGE_LINES
+
+    async def set_mute(self, value):
+        """Mutes or unmutes the microphone; returns the state the board reports back, or None after 2 s."""
+        self.mute_changed.clear()
+        if not await self.send({"type": "mute", "value": bool(value)}):
+            return None
+        log(f"board ← mute {bool(value)}")
+        try:
+            await asyncio.wait_for(self.mute_changed.wait(), 2)
+        except asyncio.TimeoutError:
+            log("board: no mute reply within 2 s (firmware without mute?)")
+            return None
+        return self.muted
 
     async def set_volume(self, message):
         """Sends a volume message and returns the volume the board reports back, or None after 2 s."""
@@ -231,6 +259,7 @@ class Bridge:
         self.speaker = BoardSpeaker(self.link, self.mic, args.tts_rate, 10 ** (args.gain / 20))
         self.assistant = Assistant(args, self.mic, self.speaker, self.link, session)
         self.say_lock = asyncio.Lock()
+        self.unmute_task = None
 
     def status(self):
         if self.link.ws is None:
@@ -267,9 +296,10 @@ class Bridge:
             await self.link.ws.close(code=4000, message=b"replaced")
         self.link.ws, self.link.id = ws, hello.get("id", "?")
         self.link.firmware, self.link.volume = hello.get("firmware"), hello.get("volume")
+        self.link.muted = hello.get("muted")
         await ws.send_str(json.dumps({"type": "ready"}))
         log(f"board {self.link.id} ready: firmware {hello.get('firmware', '?')!r}, volume {self.link.volume}, "
-            f"from {peer}")
+            f"muted {self.link.muted}, from {peer}")
         try:
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.BINARY:
@@ -300,6 +330,7 @@ class Bridge:
             return web.json_response({"error": "bad token"}, status=401)
         return web.json_response({"connected": self.link.ws is not None, "id": self.link.id,
                                   "firmware": self.link.firmware, "volume": self.link.volume,
+                                  "muted": self.link.muted, "muted_until": self.link.muted_until,
                                   "conversation": not self.assistant.idle()})
 
     async def http_volume(self, request):
@@ -319,6 +350,39 @@ class Bridge:
         if volume is None:
             return web.json_response({"error": "the board did not answer"}, status=504)
         return web.json_response({"volume": volume})
+
+    async def http_mute(self, request):
+        """POST {"value": true|false} and optionally {"for": seconds}: mute or unmute the microphone."""
+        if not self.authorized(request):
+            return web.json_response({"error": "bad token"}, status=401)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        if not isinstance(body, dict) or not isinstance(body.get("value"), bool):
+            return web.json_response({"error": 'send {"value": true|false} and optionally {"for": seconds}'},
+                                     status=400)
+        if self.link.ws is None:
+            return web.json_response({"error": "no board connected"}, status=503)
+        if self.unmute_task is not None:
+            self.unmute_task.cancel()
+            self.unmute_task, self.link.muted_until = None, None
+        muted = await self.link.set_mute(body["value"])
+        if muted is None:
+            return web.json_response({"error": "the board did not answer (firmware without mute?)"}, status=504)
+        seconds = body.get("for")
+        if muted and isinstance(seconds, (int, float)) and seconds > 0:
+            self.link.muted_until = time.time() + seconds
+            self.unmute_task = asyncio.create_task(self.unmute_after(seconds))
+            log(f"microphone muted for {seconds:.0f} s, until "
+                f"{time.strftime('%H:%M:%S', time.localtime(self.link.muted_until))}")
+        return web.json_response({"muted": muted, "muted_until": self.link.muted_until})
+
+    async def unmute_after(self, seconds):
+        await asyncio.sleep(seconds)
+        self.unmute_task, self.link.muted_until = None, None
+        log("timed mute over: unmuting")
+        await self.link.set_mute(False)
 
     async def http_say(self, request):
         """POST {"text": "…"}: says it on the board; answers once the board has played it."""
@@ -398,6 +462,16 @@ class Bridge:
             self.link.volume = message.get("value")
             self.link.volume_changed.set()
             log(f"board → volume {self.link.volume}", conv)
+        elif kind == "mute":
+            self.link.muted = bool(message.get("value"))
+            self.link.mute_changed.set()
+            log(f"board → mute {self.link.muted}", conv)
+            if not self.link.muted and self.unmute_task is not None:
+                self.unmute_task.cancel()  # unmuted some other way: the timer has nothing left to do
+                self.unmute_task, self.link.muted_until = None, None
+            if self.link.muted and conv is not None and getattr(conv, "task", None):
+                log("microphone muted: conversation ended", conv)
+                conv.task.cancel()
         else:
             log(f"board → {json.dumps(message, ensure_ascii=False)[:200]}", conv)
 
@@ -421,6 +495,7 @@ async def serve(args):
         app.router.add_get(args.path + "/status", bridge.http_status)
         app.router.add_post(args.path + "/volume", bridge.http_volume)
         app.router.add_post(args.path + "/say", bridge.http_say)
+        app.router.add_post(args.path + "/mute", bridge.http_mute)
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         await web.TCPSite(runner, args.host, args.port).start()
