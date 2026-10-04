@@ -7,3 +7,6 @@ idf_component_register(SRCS ${lib}/kiss_fft_int16.cc ${lib}/fft.cc ${lib}/fft_ut
                             ${lib}/pcan_gain_control_util.cc ${lib}/window.cc ${lib}/window_util.cc
                        INCLUDE_DIRS "."
                        PRIV_INCLUDE_DIRS "kissfft")
+
+# where the time goes: fast even when the project builds for size
+target_compile_options(${COMPONENT_LIB} PRIVATE -O2)

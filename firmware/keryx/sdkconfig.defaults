@@ -1,10 +1,14 @@
 CONFIG_IDF_TARGET="esp32s3"
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+# partitions.csv: two 3 MB app slots and a filesystem
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # start-up log over the XIAO's USB-C until TinyUSB takes the PHY; UART0 pins 43/44 carry I2S data on this board
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_FREERTOS_HZ=1000
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
-CONFIG_COMPILER_OPTIMIZATION_PERF=y
+# for size; the wake word and its frontend build with -O2 (their CMakeLists), where the time goes
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 
 # USB Audio Class device
 CONFIG_UAC_TUSB_MANUFACTURER="Flopsstuff"
@@ -21,3 +25,19 @@ CONFIG_UAC_CDC=y
 CONFIG_UAC_TINYUSB_TASK_CORE=0
 CONFIG_UAC_MIC_TASK_CORE=0
 CONFIG_UAC_SPK_TASK_CORE=0
+
+# The XIAO's 8 MB octal PSRAM: Wi-Fi, lwIP and the large audio buffers go there, leaving internal RAM to the wake
+# word's weights (which must stay there for speed) and small allocations
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# Internal RAM is short (the wake word's weights take 118 KB of it), and Wi-Fi needs its RX buffers there: keep code
+# in flash rather than IRAM where speed does not matter. Our stream is ~32 KB/s.
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
+CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8

@@ -121,6 +121,13 @@ char const *string_desc_arr [] = {
 
 static uint16_t _desc_str[32];
 
+// The serial number string (Keryx patch): the application can override this, e.g. with one made from the MAC, so
+// that every board gets its own serial port name on the host.
+__attribute__((weak)) const char *uac_serial_number(void)
+{
+    return CONFIG_UAC_TUSB_SERIAL_NUM;
+}
+
 // Invoked when received GET STRING DESCRIPTOR request
 // Application return pointer to descriptor, whose contents must exist long enough for transfer to complete
 uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid)
@@ -138,7 +145,7 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid)
             return NULL;
         }
 
-        const char *str = string_desc_arr[index];
+        const char *str = index == 3 ? uac_serial_number() : string_desc_arr[index];
 
         // Cap at max char
         chr_count = (uint8_t) strlen(str);

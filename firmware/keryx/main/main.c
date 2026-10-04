@@ -20,6 +20,7 @@
  * The XVF3800 must run the I2S firmware, which clocks the bus; the ESP32 is the I2S slave. The USB PHY stays with
  * the USB serial/JTAG console for a few seconds after boot, then TinyUSB takes it for the sound card and the
  * serial port; the `bootloader` command there restarts into the ROM download mode (firmware/flash.sh sends it).
+ * The same port pairs the board with the voice bridge: Wi-Fi and bridge settings, kept in NVS (keryx_net).
  */
 
 #include <math.h>
@@ -31,11 +32,13 @@
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
 #include "keryx_console.h"
+#include "keryx_net.h"
 #include "keryx_sounds.h"
 #include "kww_decimate.h"
 #include "kww_frontend.h"
@@ -83,7 +86,7 @@ static const uint8_t OP_L_REFERENCE[2] = {4, 0};  // far end: the echo reference
 
 static i2s_chan_handle_t i2s_tx, i2s_rx;
 static StreamBufferHandle_t mic_buffer, play_buffer;
-static char banner[128];
+static char banner[160];
 
 // statistics for the report, reset with it
 static volatile int64_t last_mic_read_us;      // the host is recording while this is recent
@@ -389,9 +392,34 @@ static void uac_set_volume_cb(uint32_t volume, void *ctx)
     update_speaker_gain();
 }
 
+static const char *reset_reason(void)
+{
+    switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: return "power-on";
+    case ESP_RST_SW: return "restart";
+    case ESP_RST_PANIC: return "PANIC";
+    case ESP_RST_INT_WDT: return "INTERRUPT WATCHDOG";
+    case ESP_RST_TASK_WDT: return "TASK WATCHDOG";
+    case ESP_RST_WDT: return "WATCHDOG";
+    case ESP_RST_BROWNOUT: return "BROWNOUT";
+    case ESP_RST_USB: return "usb";
+    case ESP_RST_EXT: return "reset pin";
+    default: return "other";
+    }
+}
+
+// USB serial number: one per board, so each gets its own serial port name on the host.
+const char *uac_serial_number(void)
+{
+    return keryx_net_id();
+}
+
 // Serial port commands beyond keryx_console's own.
 static bool console_command(const char *cmd)
 {
+    if (keryx_net_command(cmd)) {
+        return true;
+    }
     if (strcmp(cmd, "sound wake") == 0) {
         wake_sound_requested = true;
         return true;
@@ -432,8 +460,8 @@ void app_main(void)
     }
 
     // printed whenever a host opens the serial port: the start-up log is long gone by then
-    snprintf(banner, sizeof(banner), "Keryx: wake word threshold %.2f, esp-dsp decimator check %d (0 or 1 is fine)",
-             KWW_THRESHOLD, kww_decimate_self_check());
+    snprintf(banner, sizeof(banner), "Keryx %s: last reset %s, wake word threshold %.2f, esp-dsp decimator check %d "
+             "(0 or 1 is fine)", keryx_net_id(), reset_reason(), KWW_THRESHOLD, kww_decimate_self_check());
     mic_buffer = xStreamBufferCreate(MIC_BUFFER_MS * MS_BYTES, 1);
     play_buffer = xStreamBufferCreate(PLAY_BUFFER_MS * MS_BYTES, 1);
     ESP_ERROR_CHECK(mic_buffer == NULL || play_buffer == NULL ? ESP_ERR_NO_MEM : ESP_OK);
@@ -454,4 +482,8 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(uac_device_init(&config));
     ESP_ERROR_CHECK(keryx_console_start(banner, console_command));
+    err = keryx_net_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Wi-Fi did not start: %s", esp_err_to_name(err));
+    }
 }

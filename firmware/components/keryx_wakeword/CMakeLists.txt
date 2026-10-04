@@ -3,3 +3,6 @@
 idf_component_register(SRCS "kww_decimate.c" "kww_frontend.c" "kww_model.c"
                        INCLUDE_DIRS "include"
                        REQUIRES micro_frontend espressif__esp-dsp)
+
+# where the time goes: fast even when the project builds for size
+target_compile_options(${COMPONENT_LIB} PRIVATE -O2)

@@ -107,5 +107,18 @@ predecessors.
 - Serial port commands besides `bootloader` and `reboot`: `loop on` puts the XVF3800's echo reference — what was
   played — on the left capture channel instead of the processed beam, to measure the playback path; `loop off`
   restores it.
+- Pairing, through the same serial port (`components/keryx_net`): `set ssid|password|bridge|token <value>`,
+  `config`, `erase`, `wifi scan`, `status`, `net check <host> <port>` (can the board open a TCP connection there:
+  is the bridge reachable from this network?); answers end with an `ok` or `error` line. The settings live in NVS and
+  survive flashing; the board joins Wi-Fi at start-up and after `set password`, retries with back-off (1 to 30 s)
+  and reports `wifi connected ip=… rssi=…` / `wifi disconnected reason=…`. `status` also shows the board's id
+  (`keryx-` and the end of its MAC, also its USB serial number, so each board has its own port name), the firmware
+  version and free memory. The XIAO needs its U.FL antenna: without it networks show at about −92 dBm.
+- Memory: the wake word's weights and state take ~160 KB of internal RAM, and Wi-Fi needs its RX buffers there, so
+  the 8 MB PSRAM is on for everything large, Wi-Fi, FreeRTOS and heap code stays in flash instead of IRAM, and Wi-Fi
+  keeps 8 static RX buffers. About 33 KB of internal RAM stays free with Wi-Fi connected. The app builds for size
+  except the wake word and its frontend (`-O2`); `partitions.csv` has two 3 MB app slots, for updates over Wi-Fi
+  later, and 1.9 MB for a filesystem.
+- Wi-Fi power save is on (modem sleep, DTIM 3): pings take ~260 ms. Streaming will have to turn it off while it runs.
 - The host should send 48 kHz: macOS converting 16 kHz on the fly (PortAudio with its default small blocks) breaks
   up the sound on this device; 24 and 44.1 kHz were fine.

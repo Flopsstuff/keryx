@@ -85,7 +85,7 @@ static void run_command(const char *cmd)
 
 static void console_task(void *arg)
 {
-    char cmd[64];
+    char cmd[256];  // room for `set token <token>`
     size_t len = 0;
     bool was_connected = false;
     for (;;) {
@@ -120,7 +120,7 @@ esp_err_t keryx_console_start(const char *banner, keryx_console_command_fn comma
     if (write_lock == NULL) {
         return ESP_ERR_NO_MEM;
     }
-    if (xTaskCreatePinnedToCore(console_task, "console", 3072, NULL, 2, NULL, 0) != pdPASS) {
+    if (xTaskCreatePinnedToCore(console_task, "console", 4096, NULL, 2, NULL, 0) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
     esp_log_set_vprintf(log_vprintf);

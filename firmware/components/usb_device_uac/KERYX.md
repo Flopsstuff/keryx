@@ -12,5 +12,7 @@ Copied from the ESP Component Registry, version 1.3.1
   `CONFIG_UAC_CDC` adds a CDC ACM interface (endpoints 0x83 notification, 0x04/0x84 data; string "<product> console"),
   making a composite device. The ESP32-S3 allows 5 IN endpoints including EP0, so this takes the last two. The
   application uses it through TinyUSB's `tud_cdc_*` (see `components/keryx_console`).
+- `tusb/usb_descriptors.c`: the serial number string comes from `uac_serial_number()`, a weak function returning
+  `CONFIG_UAC_TUSB_SERIAL_NUM` that the application can override.
 
 When updating to a newer upstream version, copy it over this directory and re-apply the changes above.
