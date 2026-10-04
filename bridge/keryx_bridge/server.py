@@ -44,7 +44,7 @@ import aiohttp
 import numpy as np
 from aiohttp import web
 
-from .voice import CONFIG, PACKAGE, STT_RATE, Assistant, apply_gain, dbfs, env, log, speakable
+from .voice import CONFIG, PACKAGE, STT_RATE, Assistant, apply_gain, dbfs, env, log, speakable, untagged
 
 KEEP_S = 120  # seconds of the board's microphone kept for STT
 REPO = PACKAGE.parents[1]
@@ -429,7 +429,7 @@ class Bridge:
                 await asyncio.sleep(0.2)
             conv = None if self.assistant.idle() else self.assistant.conversation
             if conv is not None:
-                conv.keryx_said(text)  # so that the microphone hearing it is not taken for the user
+                conv.keryx_said(untagged(text))  # so that the microphone hearing it is not taken for the user
             log(f"say: {text!r}", conv)
             args = self.assistant.args
             url = (f"wss://api.x.ai/v1/tts?language=auto&voice={args.voice}&codec=pcm&sample_rate={self.speaker.rate}")

@@ -115,8 +115,9 @@ text-to-speech, playback and interruptions.
 - `XAI_VOICE` — `eve`, `rex`, `ara`, `sal`, `leo`, …
 - `KERYX_SYSTEM_PROMPT_PATH` — your own voice prompt instead of the bundled
   [`keryx_bridge/prompts/voice.md`](keryx_bridge/prompts/voice.md), which asks Hermes for short spoken answers in
-  Russian by default. Hermes layers it on top of its own prompt; the bridge appends a "Device status" section with
-  the board's volume.
+  Russian by default and lists xAI's speech tags (`[laugh]`, `[pause]`, `<whisper>…</whisper>`, `<singing>…</singing>`
+  and the rest), which the bridge passes to text-to-speech. Hermes layers it on top of its own prompt; the bridge
+  appends a "Device status" section with the board's volume.
 - `KERYX_FOLLOW_UP` — seconds of silence after an answer that end a conversation (7); after that it takes the wake
   word again.
 - `KERYX_SESSION_TIMEOUT` — how long Hermes remembers the conversation (`1h`). Hermes keeps the history in one of

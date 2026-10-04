@@ -132,7 +132,9 @@ logging) behind three adapters — a microphone, a speaker and a board — so `s
   (`~/.local/state/keryx/session.json`). Interruptions and `say.sh` reach Hermes as bracketed notes before the next
   request (`Assistant.notes`), since Hermes stores whole answers;
 - `text.done` is sent to xAI TTS after every sentence: xAI otherwise holds back each sentence's end until more text
-  arrives, which leaves the speaker silent mid-word while Hermes is still writing;
+  arrives, which leaves the speaker silent mid-word while Hermes is still writing. A sentence end inside a wrapping
+  speech tag (`<whisper>…</whisper>`) is not a cut: the prompt lets Hermes use xAI's speech tags, `speakable()` must
+  pass them through, and the echo filter and notes see the text without them (`untagged()`);
 - the echo filter matches STT word timestamps against the intervals the speaker was playing (in microphone
   frames) and fuzzy-matches the words against what Keryx said;
 - the system prompt (`keryx_bridge/prompts/voice.md` unless `KERYX_SYSTEM_PROMPT[_PATH]`) ends with a "Device

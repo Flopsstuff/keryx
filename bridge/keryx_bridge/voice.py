@@ -135,11 +135,43 @@ def apply_gain(pcm, gain):
     return np.clip(np.round(x), -32768, 32767).astype(np.int16).tobytes()
 
 
+# xAI TTS speech tags (docs.x.ai, text-to-speech, "Speech Tags"): inline ones make a sound where they stand, wrapping
+# ones change how the text inside is said; prompts/voice.md tells Hermes about them
+INLINE_TAGS = ("pause", "long-pause", "hum-tune", "laugh", "chuckle", "giggle", "cry", "tsk", "tongue-click",
+               "lip-smack", "breath", "inhale", "exhale", "sigh")
+WRAPPING_TAGS = ("soft", "whisper", "loud", "build-intensity", "decrease-intensity", "higher-pitch", "lower-pitch",
+                 "slow", "fast", "sing-song", "singing", "emphasis")
+SPEECH_TAG = re.compile(r"\[(?:%s)\]|</?(?:%s)>" % ("|".join(INLINE_TAGS), "|".join(WRAPPING_TAGS)))
+
+
 def speakable(text):
-    """What is left of a markdown-ish reply once it is meant to be heard."""
+    """What is left of a markdown-ish reply once it is meant to be heard; speech tags pass through untouched."""
+    parts, end = [], 0
+    for tag in SPEECH_TAG.finditer(text):
+        parts += [unmarkdown(text[end:tag.start()]), tag[0]]
+        end = tag.end()
+    return "".join(parts + [unmarkdown(text[end:])])
+
+
+def unmarkdown(text):
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
     text = re.sub(r"https?://\S+", "", text)
     return re.sub(r"[*_#`>|]", "", text)
+
+
+def untagged(text):
+    """The words of a reply without its speech tags: what the microphone can hear back."""
+    return re.sub(r"  +", " ", SPEECH_TAG.sub("", text)).strip()
+
+
+def tags_closed(text):
+    """Whether every wrapping speech tag opened in `text` is closed in it, so it can go to TTS as one piece."""
+    depth = {}
+    for tag in SPEECH_TAG.finditer(text):
+        if tag[0].startswith("<"):
+            name = tag[0].strip("</>")
+            depth[name] = depth.get(name, 0) + (-1 if tag[0].startswith("</") else 1)
+    return all(n <= 0 for n in depth.values())
 
 
 SENTENCE_END = re.compile(r"[.!?…]+[»\"')]*\s+|\n+")
@@ -634,7 +666,7 @@ class Assistant:
             self.hermes_session()
         else:
             self.touch()
-        self.notes.append(f"[Keryx said aloud on its own: «{text}»]")
+        self.notes.append(f"[Keryx said aloud on its own: «{untagged(text)}»]")
 
     # ------------------------------------------------------------ wake events
 
@@ -661,7 +693,8 @@ class Assistant:
             async for delta in self.hermes_stream(text, exchange, conv):
                 reply += delta
                 pending = reply[len(spoken):]
-                ends = list(SENTENCE_END.finditer(pending))
+                # the last sentence end outside a wrapping speech tag: TTS gets each tag whole
+                ends = [m for m in SENTENCE_END.finditer(pending) if tags_closed(pending[:m.end()])]
                 if ends:
                     sentence = pending[:ends[-1].end()]
                     spoken += sentence
@@ -687,7 +720,7 @@ class Assistant:
             log(f"answer stopped while {state}; dropped {dropped:.1f} s of queued audio", conv)
             # Hermes keeps the whole answer in its session; tell it with the next request how much was heard
             if spoken.strip():
-                self.notes.append(f"[The user interrupted Keryx; only this much was said aloud: «{spoken.strip()}»]")
+                self.notes.append(f"[The user interrupted Keryx; only this much was said aloud: «{untagged(spoken)}»]")
             else:
                 self.notes.append("[The user interrupted before Keryx answered the previous request]")
             raise
@@ -728,7 +761,7 @@ class Assistant:
             return 0
         exchange.mark("tts_sent")
         conv.state = "speaking"
-        conv.keryx_said(text)
+        conv.keryx_said(untagged(text))
         log(f"TTS ← sentence {number} ({len(text)} chars): {text!r}", conv)
         await tts.send_str(json.dumps({"type": "text.delta", "delta": text + " "}))
         if self.args.flush_sentences:
