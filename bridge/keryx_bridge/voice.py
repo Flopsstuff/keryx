@@ -607,7 +607,9 @@ class Assistant:
             return None, 0.0
 
     def hermes_session(self, conv=None):
-        """The session for the next request: the last one, unless it has been idle longer than --session-timeout."""
+        """Continues the last session, or starts a new one when it has been idle longer than --session-timeout.
+        Decided when a conversation begins (and by say.sh outside one), never between the exchanges of one
+        conversation, so a follow-up always reaches the session of the request before it."""
         idle = time.time() - self.last_active
         if self.session_id is None or idle > self.args.session_timeout:
             if self.session_id is not None:
@@ -628,7 +630,10 @@ class Assistant:
 
     def said_on_own(self, text):
         """say.sh: the session goes on, and Hermes hears about it with the next request."""
-        self.hermes_session()
+        if self.idle():
+            self.hermes_session()
+        else:
+            self.touch()
         self.notes.append(f"[Keryx said aloud on its own: «{text}»]")
 
     # ------------------------------------------------------------ wake events
@@ -639,6 +644,7 @@ class Assistant:
             return
         self.conversations += 1
         self.conversation = Conversation(self, self.conversations, time.monotonic(), frame)
+        self.hermes_session(self.conversation)
         self.conversation.task = asyncio.create_task(self.conversation.run(score))
 
     # ------------------------------------------------------------ Hermes → text-to-speech → speaker
@@ -742,7 +748,7 @@ class Assistant:
         status = self.board.status() if hasattr(self.board, "status") else []
         if status:
             system += "\n" + "\n".join(status)  # the prompt ends with its "Device status" section
-        session = self.hermes_session(conv)
+        session = self.session_id or self.hermes_session(conv)
         # only the new request: Hermes takes the history from the session
         content = "\n".join(self.notes + [text])
         self.notes.clear()
