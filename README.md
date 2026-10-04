@@ -67,4 +67,11 @@ before anything else — see [flashing](docs/flashing.md).
 **[docs/index.md](docs/index.md)** is the map: flashing and pairing, the bridge, building the firmware, training
 the wake word, the board's hardware notes and the measurements behind the design choices.
 
+## License
+
+[Apache License 2.0](LICENSE). Vendored components keep their own licenses: `firmware/components/micro_frontend`
+(TensorFlow Lite Micro's frontend, Apache-2.0, with KISS FFT, BSD-3-Clause) and
+`firmware/components/usb_device_uac` (Espressif, Apache-2.0). The board images in `docs/images/` other than the
+photo of the prototype come from the [Seeed wiki](https://wiki.seeedstudio.com/respeaker_flex_introduction/).
+
 Work in progress.
