@@ -28,8 +28,8 @@ bridge → board
 
 HTTP control on the same port, with the same token as `Authorization: Bearer …`: GET <path>/status;
 POST <path>/volume with {"value": 0..100} or {"delta": n}, which answers with the volume the board reports back;
-POST <path>/say with {"text": "…"} and optionally {"volume": 0..100}, which says it on the board (at that volume, the
-board's scale) and answers once it has been played;
+POST <path>/say with {"text": "…"} and optionally {"volume": 0..100} or {"volume_delta": ±n}, which says it on the
+board (at that volume, or that far from the board's, on the board's scale) and answers once it has been played;
 POST <path>/mute with {"value": true|false} and optionally {"for": seconds}, after which the bridge unmutes;
 POST <path>/console with {"line": "…"}, which runs it on the board's console and answers with what it printed.
 
@@ -73,8 +73,8 @@ BRIDGE_LINES = [
     "only a safe set is allowed",
     f'speak on your own: {REPO}/say.sh [--volume N] "text" (says it on the speaker, after any answer in progress; '
     "for reminders, timers or anything the user asked to be told later; --volume 0..100 says it at that volume, on "
-    "the same scale as the volume above, without changing it: use a low one, e.g. 30, at night or when asked to be "
-    "quiet)",
+    "the same scale as the volume above, and --volume -20 / +10 that far from it, without changing it: use a low "
+    "one at night or when asked to be quiet)",
 ] if INSTALLED else [])
 
 
@@ -466,13 +466,19 @@ class Bridge:
             body = {}
         text = str(body.get("text", "")).strip() if isinstance(body, dict) else ""
         volume = body.get("volume") if isinstance(body, dict) else None
-        if not text or len(text) > 2000 or (volume is not None and (not isinstance(volume, int) or
-                                                                     isinstance(volume, bool) or
-                                                                     not 0 <= volume <= 100)):
+        delta = body.get("volume_delta") if isinstance(body, dict) else None
+
+        def number(v, low, high):
+            return v is None or (isinstance(v, int) and not isinstance(v, bool) and low <= v <= high)
+
+        if (not text or len(text) > 2000 or not number(volume, 0, 100) or not number(delta, -100, 100) or
+                (volume is not None and delta is not None)):
             return web.json_response({"error": 'send {"text": "…"}, up to 2000 characters, and optionally '
-                                      '{"volume": 0..100}'}, status=400)
+                                      '{"volume": 0..100} or {"volume_delta": ±n}'}, status=400)
         if self.link.ws is None:
             return web.json_response({"error": "no board connected"}, status=503)
+        if delta is not None and self.link.volume is not None:
+            volume = max(0, min(100, self.link.volume + delta))
         try:
             seconds = await asyncio.wait_for(self.say(text, volume), 180)
         except (RuntimeError, aiohttp.ClientError, asyncio.TimeoutError) as e:

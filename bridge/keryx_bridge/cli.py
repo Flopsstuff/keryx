@@ -5,8 +5,8 @@
   keryx-bridge pair [options]    give the board on USB the Wi-Fi, this bridge's address and its token
   keryx-bridge status            what a running bridge on this machine knows about the board
   keryx-bridge volume 60|+10|-10 set the board's volume through a running bridge
-  keryx-bridge say [--volume N] TEXT   say something on the board through a running bridge (TEXT or stdin),
-                                 optionally at volume N (0..100) instead of the board's
+  keryx-bridge say [--volume N|+n|-n] TEXT   say something on the board through a running bridge (TEXT or
+                                 stdin), optionally at volume N (0..100) or n from the board's, not changing it
   keryx-bridge mute [30m|2h]     stop the board listening (for a while: s, m or h; a bare number is minutes)
   keryx-bridge unmute            start it listening again
   keryx-bridge console LINE      run a line of the board's console through a running bridge (a safe set only)
@@ -238,9 +238,10 @@ def main():
     elif command == "say":
         body = {}
         if rest[:1] in (["--volume"], ["-v"]):
-            if len(rest) < 2 or not rest[1].isdigit() or int(rest[1]) > 100:
-                sys.exit("keryx-bridge say --volume 0..100 TEXT")
-            body["volume"], rest = int(rest[1]), rest[2:]
+            value = rest[1] if len(rest) > 1 else ""
+            if not value.lstrip("+-").isdigit() or int(value) > 100 or int(value) < -100:
+                sys.exit("keryx-bridge say --volume 0..100|+n|-n TEXT")
+            body["volume_delta" if value[0] in "+-" else "volume"], rest = int(value), rest[2:]
         body["text"] = " ".join(rest).strip() or sys.stdin.read().strip()
         if not body["text"]:
             sys.exit("nothing to say: keryx-bridge say [--volume N] TEXT, or the text on stdin")
