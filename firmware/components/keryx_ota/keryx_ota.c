@@ -19,9 +19,11 @@
 
 static const char *TAG = "ota";
 
-// GitHub answers with a redirect to a signed URL of several hundred characters: the header buffer must hold it
+// GitHub answers with a redirect to a signed URL of several hundred characters: the response header buffer must hold
+// it, and so must the request buffer when the request goes there
 #define RELEASES "https://github.com/Flopsstuff/keryx/releases/latest/download/"
 #define HTTP_BUFFER 8192
+#define HTTP_BUFFER_TX 4096
 #define HTTP_TIMEOUT_MS 15000
 #define TASK_STACK 8192  // in internal RAM: the task writes flash, and a TLS handshake needs the room
 #define TRIAL_MS 30000
@@ -45,7 +47,7 @@ static void http_config(esp_http_client_config_t *cfg, const char *url)
     cfg->url = url;
     cfg->crt_bundle_attach = esp_crt_bundle_attach;
     cfg->buffer_size = HTTP_BUFFER;
-    cfg->buffer_size_tx = 1024;
+    cfg->buffer_size_tx = HTTP_BUFFER_TX;
     cfg->timeout_ms = HTTP_TIMEOUT_MS;
     cfg->keep_alive_enable = true;
 }
