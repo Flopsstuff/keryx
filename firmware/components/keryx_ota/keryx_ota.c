@@ -1,5 +1,6 @@
 #include "keryx_ota.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +41,18 @@ static char job_url[URL_MAX];
 static char latest[VERSION_MAX];  // what the last check found
 static esp_err_t check_result;
 static SemaphoreHandle_t check_done;
+static char last[160];  // how the last update went, for `ota` (its lines go to the serial port only)
+
+// a line for the log and for `ota`
+static void report(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void report(const char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(last, sizeof(last), fmt, args);
+    va_end(args);
+    keryx_console_printf("ota: %s\n", last);
+}
 
 static void http_config(esp_http_client_config_t *cfg, const char *url)
 {
@@ -156,20 +169,18 @@ static void ota_task(void *arg)
             err = fetch_latest();
             const char *running = esp_app_get_description()->version;
             if (err != ESP_OK) {
-                keryx_console_printf("ota: cannot read the latest release: %s\n", esp_err_to_name(err));
+                report("cannot read the latest release: %s", esp_err_to_name(err));
             } else if (strcmp(latest, running) == 0 && !job_force) {
-                keryx_console_printf("ota: %s is the latest release already (ota update force reinstalls it)\n",
-                                     running);
+                report("%s is the latest release already (ota update force reinstalls it)", running);
                 err = ESP_FAIL;
             } else {
                 strlcpy(job_url, RELEASES "keryx.bin", sizeof(job_url));
             }
         }
         if (err == ESP_OK) {
-            keryx_console_printf("ota: from %s\n", job_url);
+            report("downloading %.120s", job_url);
             err = download();
-            keryx_console_printf("ota: failed: %s; still running %s\n", esp_err_to_name(err),
-                                 esp_app_get_description()->version);
+            report("failed: %s; still running %s", esp_err_to_name(err), esp_app_get_description()->version);
         }
     }
     busy = false;
@@ -232,6 +243,12 @@ bool keryx_ota_command(const char *cmd)
         keryx_console_printf("firmware %s in %s, %s%s\n", esp_app_get_description()->version,
                              esp_ota_get_running_partition()->label, state_name(),
                              busy ? "; an update is running" : "");
+        if (last[0] != '\0') {
+            keryx_console_printf("last update: %s\n", last);
+        }
+        if (progress >= 0) {
+            keryx_console_printf("downloaded %d %%\n", progress);
+        }
         keryx_console_printf("ok\n");
     } else if (strcmp(cmd, "ota check") == 0) {
         if (check_done == NULL || !start_job(JOB_CHECK, NULL, false)) {
