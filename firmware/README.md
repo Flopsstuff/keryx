@@ -134,17 +134,17 @@ predecessors.
   and an Adafruit NeoDriver (seesaw, 0x60) driving a ring of 24 WS2812. Turning the knob changes the volume, 2 steps (1
   dB) a detent, clockwise louder; a short press ends a running conversation (`{"type":"stop"}` to the bridge) and
   otherwise acts as the wake word; holding it for 1 s mutes or unmutes the microphone. The ring: a clock when idle
-  (amber marks at 12, 3, 6 and 9, the minute hand one blue pixel, the hour hand the two green pixels nearest its angle;
-  colours add up where they overlap), the same clock with red marks when muted, blue breathing while listening (the
-  whole conversation), a purple comet while waiting for the answer (the thinking sound), green following the speech
-  while answering, one orange pixel breathing without a bridge, and for 1.5 s after any volume change an arc as long as
-  the volume. Everything is drawn clockwise from 12 o'clock: `ring top <0-23>` names the pixel at 12 and `ring reverse`
-  flips the direction, as the ring is mounted. The brightness is at most a percentage of full, by day and by night:
-  `ring brightness` shows it, `ring brightness day|night <1-100> [HH:MM]` sets a level and when it begins (default 20 %
-  from 07:00, 5 % from 22:00). These settings live in NVS. The time comes over SNTP (`pool.ntp.org`), Europe/Warsaw
-  (`CLOCK_TZ` in `main.c`); until then there is no clock and it is day. 30 frames a second; only frames that changed go
-  out. Each module is looked for every 2 s until it answers, and again after an I2C error, so either can be missing or
-  plugged in later. `status` adds `panel encoder=ok ring=ok i2c_errors=0`.
+  (yellow marks at 12, 3, 6 and 9, the minute hand one blue pixel, the hour hand the two green pixels nearest its angle;
+  the hands cover the marks, the minute hand the hour hand), the same clock with red marks when muted, blue breathing
+  while listening (the whole conversation), a purple comet while waiting for the answer (the thinking sound), green
+  following the speech while answering, one orange pixel breathing without a bridge, and for 1.5 s after any volume
+  change an arc as long as the volume. Everything is drawn clockwise from 12 o'clock: `ring top <0-23>` names the pixel
+  at 12 and `ring reverse` flips the direction, as the ring is mounted. The brightness is at most a percentage of full,
+  by day and by night: `ring brightness` shows it, `ring brightness day|night <1-100> [HH:MM]` sets a level and when it
+  begins (default 20 % from 07:00, 5 % from 22:00). These settings live in NVS. The time comes over SNTP
+  (`pool.ntp.org`), Europe/Warsaw (`CLOCK_TZ` in `main.c`); until then there is no clock and it is day. 30 frames a
+  second; only frames that changed go out. Each module is looked for every 2 s until it answers, and again after an I2C
+  error, so either can be missing or plugged in later. `status` adds `panel encoder=ok ring=ok i2c_errors=0`.
 - The console over Wi-Fi: the bridge sends `{"type":"console","id":…,"line":…}`, the console task runs the line as if
   typed and sends back what it printed (`keryx_console_submit`, up to 3 KB). Only a safe set runs this way
   (`REMOTE_COMMANDS` in `main.c`: `status`, `config`, `volume`, `mute`, `wake`, `sound`, `ring`, `top`, `log`, `xvf

@@ -222,6 +222,13 @@ static void add(int i, float r, float g, float b, float level)
     p[2] += b * level * level;
 }
 
+// as add, but over whatever is there
+static void put(int i, float r, float g, float b, float level)
+{
+    memset(light[(i % RING_PIXELS + RING_PIXELS) % RING_PIXELS], 0, sizeof(light[0]));
+    add(i, r, g, b, level);
+}
+
 static void fill(float r, float g, float b, float level)
 {
     for (int i = 0; i < RING_PIXELS; i++) {
@@ -238,12 +245,14 @@ static void to_frame(void)
         uint8_t *px = frame + at * 3;
         for (int c = 0; c < 3; c++) {
             const float v = light[i][c] > 1 ? 1 : light[i][c];
-            px[c == 0 ? 1 : c == 1 ? 0 : 2] = (uint8_t)(v * full + 0.5f);  // r, g, b -> G R B
+            // at a night's few steps a weak share would round to 0 and change the colour: keep it at 1
+            const float x = v * full;
+            px[c == 0 ? 1 : c == 1 ? 0 : 2] = x <= 0 ? 0 : x < 1 ? 1 : (uint8_t)(x + 0.5f);  // r, g, b -> G R B
         }
     }
 }
 
-// Amber marks at 12, 3, 6 and 9 (red when muted), the minute hand one blue pixel, the hour hand two green ones;
+// Yellow marks at 12, 3, 6 and 9 (red when muted: red and green alike, so that the two still differ at night), the minute hand one blue pixel, the hour hand two green ones;
 // nothing until SNTP has set the clock.
 static void clock_face(bool muted)
 {
@@ -257,16 +266,18 @@ static void clock_face(bool muted)
         if (muted) {
             add(mark, 1, 0, 0, 0.7f);
         } else {
-            add(mark, 1, 0.45f, 0, 0.7f);
+            add(mark, 1, 1, 0, 0.7f);
         }
     }
+    // The hands cover the marks; the minute hand, one pixel, goes over the hour hand. Their level: at 2 % (night) the
+    // hour hand is G 4 and the minute hand B 4 G 1, at 10 % (day) five times that.
+    const float hand = 0.885f;
     const float minutes = tm.tm_min + tm.tm_sec / 60.0f;
-    add((int)(minutes * RING_PIXELS / 60), 0, 0.3f, 1, 1);
-    // the two pixels nearest the hour hand's angle
     const float hour = (tm.tm_hour % 12 + minutes / 60) * RING_PIXELS / 12;
-    const int first = (int)floorf(hour - 0.5f);
-    add(first, 0, 1, 0, 1);
-    add(first + 1, 0, 1, 0, 1);
+    const int first = (int)floorf(hour - 0.5f);  // the two pixels nearest the hour hand's angle
+    put(first, 0, 1, 0, hand);
+    put(first + 1, 0, 1, 0, hand);
+    put((int)(minutes * RING_PIXELS / 60), 0, 0.25f, 1, hand);
 }
 
 static void render(int64_t now)
