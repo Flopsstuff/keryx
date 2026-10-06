@@ -13,6 +13,7 @@
 #include "esp_websocket_client.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
@@ -53,6 +54,12 @@ static volatile uint32_t up_written;  // samples ever written
 static uint32_t up_sent;
 static volatile bool streaming;
 static volatile bool wake_pending;
+static volatile bool stop_pending;
+typedef struct {
+    int id;
+    char *output;  // in PSRAM, freed once sent
+} console_reply_t;
+static QueueHandle_t console_replies;
 static volatile float wake_score;
 static int64_t stream_started_us;
 
@@ -169,6 +176,11 @@ static void handle_message(const char *text)
     } else if (strcmp(type->valuestring, "play_stop") == 0) {
         if (play_open) {
             play_stop_req = true;
+        }
+    } else if (strcmp(type->valuestring, "console") == 0) {
+        const cJSON *id = cJSON_GetObjectItem(msg, "id"), *line = cJSON_GetObjectItem(msg, "line");
+        if (cJSON_IsNumber(id) && cJSON_IsString(line) && callbacks.console != NULL) {
+            callbacks.console(id->valueint, line->valuestring);
         }
     } else {
         keryx_console_printf("bridge sent unknown type %s\n", type->valuestring);
@@ -324,6 +336,25 @@ static void link_task(void *arg)
                     keryx_console_printf("bridge %s: wake not sent\n", STATE_NAMES[state]);
                 }
             }
+            console_reply_t reply;
+            while (xQueueReceive(console_replies, &reply, 0) == pdTRUE) {
+                if (state == LINK_READY) {
+                    cJSON *msg = cJSON_CreateObject();
+                    cJSON_AddStringToObject(msg, "type", "console");
+                    cJSON_AddNumberToObject(msg, "id", reply.id);
+                    cJSON_AddStringToObject(msg, "output", reply.output);
+                    send_json(msg);
+                }
+                free(reply.output);
+            }
+            if (stop_pending) {
+                stop_pending = false;
+                if (state == LINK_READY) {
+                    cJSON *msg = cJSON_CreateObject();
+                    cJSON_AddStringToObject(msg, "type", "stop");
+                    send_json(msg);
+                }
+            }
             int volume = volume_pending;
             if (volume >= 0) {
                 volume_pending = -1;
@@ -423,7 +454,8 @@ esp_err_t keryx_link_start(const keryx_link_callbacks_t *cb)
     up_ring = heap_caps_calloc(UP_RING, sizeof(int16_t), MALLOC_CAP_SPIRAM);
     play_src = xStreamBufferCreateWithCaps(PLAY_BUFFER_BYTES, 1, MALLOC_CAP_SPIRAM);
     client_lock = xSemaphoreCreateMutex();
-    if (up_ring == NULL || play_src == NULL || client_lock == NULL) {
+    console_replies = xQueueCreate(4, sizeof(console_reply_t));
+    if (up_ring == NULL || play_src == NULL || client_lock == NULL || console_replies == NULL) {
         return ESP_ERR_NO_MEM;
     }
     // the stack in PSRAM: internal RAM is short, and this task never writes flash
@@ -477,6 +509,47 @@ void keryx_link_wake(float score)
     wake_score = score;
     wake_pending = true;
     xTaskNotifyGive(link_task_handle);
+}
+
+void keryx_link_console_reply(int id, const char *output)
+{
+    if (console_replies == NULL) {
+        return;
+    }
+    console_reply_t reply = {.id = id, .output = heap_caps_malloc(strlen(output) + 1, MALLOC_CAP_SPIRAM)};
+    if (reply.output == NULL) {
+        return;
+    }
+    strcpy(reply.output, output);
+    if (xQueueSend(console_replies, &reply, 0) != pdTRUE) {
+        free(reply.output);
+        return;
+    }
+    xTaskNotifyGive(link_task_handle);
+}
+
+void keryx_link_stop(void)
+{
+    if (link_task_handle == NULL || state != LINK_READY) {
+        return;
+    }
+    stop_pending = true;
+    xTaskNotifyGive(link_task_handle);
+}
+
+bool keryx_link_ready(void)
+{
+    return state == LINK_READY;
+}
+
+bool keryx_link_streaming(void)
+{
+    return streaming;
+}
+
+bool keryx_link_playing(void)
+{
+    return play_open;
 }
 
 // Upsamples one source sample into L output samples.

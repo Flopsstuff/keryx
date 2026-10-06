@@ -8,7 +8,9 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "hal/usb_serial_jtag_ll.h"
@@ -19,10 +21,25 @@ static const char *TAG = "console";
 
 #define POLL_MS 20
 #define LOG_LINE_MAX 256
+#define REMOTE_LINE_MAX 128
+#define REMOTE_OUTPUT_MAX 3072
+#define REMOTE_QUEUE 2
+
+typedef struct {
+    int id;
+    char line[REMOTE_LINE_MAX];
+    keryx_console_done_fn done;
+} remote_t;
 
 static SemaphoreHandle_t write_lock;
 static const char *banner_text;
 static keryx_console_command_fn app_command;
+static TaskHandle_t console_task_handle;
+static QueueHandle_t remote_queue;
+// while a submitted line runs: what the console task prints is also collected here
+static char *capture;
+static size_t capture_len;
+static volatile bool capturing;
 
 static void write_bytes(const char *data, size_t len)
 {
@@ -40,7 +57,15 @@ static void write_vprintf(const char *fmt, va_list args)
     char line[LOG_LINE_MAX];
     int n = vsnprintf(line, sizeof(line), fmt, args);
     if (n > 0) {
-        write_bytes(line, n < (int)sizeof(line) ? (size_t)n : sizeof(line) - 1);
+        n = n < (int)sizeof(line) ? n : (int)sizeof(line) - 1;
+        write_bytes(line, n);
+        if (capturing && xTaskGetCurrentTaskHandle() == console_task_handle) {
+            size_t room = REMOTE_OUTPUT_MAX - 1 - capture_len;
+            size_t take = (size_t)n < room ? (size_t)n : room;
+            memcpy(capture + capture_len, line, take);
+            capture_len += take;
+            capture[capture_len] = '\0';
+        }
     }
 }
 
@@ -161,6 +186,17 @@ static void run_command(const char *cmd)
     }
 }
 
+// A line submitted from elsewhere (the bridge): runs it here, as if typed, and hands over what it printed.
+static void run_remote(const remote_t *r)
+{
+    capture_len = 0;
+    capture[0] = '\0';
+    capturing = true;
+    run_command(r->line);
+    capturing = false;
+    r->done(r->id, capture);
+}
+
 static void console_task(void *arg)
 {
     char cmd[256];  // room for `set token <token>`
@@ -186,7 +222,10 @@ static void console_task(void *arg)
                 cmd[len++] = c;
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+        remote_t remote;
+        if (xQueueReceive(remote_queue, &remote, pdMS_TO_TICKS(POLL_MS)) == pdTRUE) {
+            run_remote(&remote);
+        }
     }
 }
 
@@ -195,12 +234,24 @@ esp_err_t keryx_console_start(const char *banner, keryx_console_command_fn comma
     banner_text = banner;
     app_command = command;
     write_lock = xSemaphoreCreateMutex();
-    if (write_lock == NULL) {
+    remote_queue = xQueueCreate(REMOTE_QUEUE, sizeof(remote_t));
+    capture = heap_caps_malloc(REMOTE_OUTPUT_MAX, MALLOC_CAP_SPIRAM);
+    if (write_lock == NULL || remote_queue == NULL || capture == NULL) {
         return ESP_ERR_NO_MEM;
     }
-    if (xTaskCreatePinnedToCore(console_task, "console", 4096, NULL, 2, NULL, 0) != pdPASS) {
+    if (xTaskCreatePinnedToCore(console_task, "console", 4096, NULL, 2, &console_task_handle, 0) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
     esp_log_set_vprintf(log_vprintf);
     return ESP_OK;
+}
+
+bool keryx_console_submit(int id, const char *line, keryx_console_done_fn done)
+{
+    if (remote_queue == NULL || strlen(line) >= REMOTE_LINE_MAX) {
+        return false;
+    }
+    remote_t r = {.id = id, .done = done};
+    strcpy(r.line, line);
+    return xQueueSend(remote_queue, &r, 0) == pdTRUE;
 }

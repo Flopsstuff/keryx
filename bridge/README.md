@@ -4,7 +4,8 @@ The service between the Keryx board and [Hermes](https://github.com/NousResearch
 WebSocket to the bridge; after "Hey Keryx" it streams the microphone there. The bridge turns speech into text with
 xAI's streaming speech-to-text, asks Hermes through its OpenAI-compatible API, reads the answer aloud with xAI's
 text-to-speech and streams the audio back to the board. A conversation goes on without the wake word until a few
-seconds of silence, and talking over an answer stops it.
+seconds of silence, and talking over an answer stops it; the board's stop button (a press on its knob) ends the
+conversation at once.
 
 It runs anywhere on the board's network: next to Hermes (a Raspberry Pi, say) or on another machine.
 
@@ -104,6 +105,7 @@ or a firewall shows up right there.
 | `keryx-bridge volume 60` / `+10` / `-10` | the board's volume, 0–100 (100 is 0 dB, 0.5 dB a step) |
 | `./set_volume.sh 60` / `+10` / `-10` | the same from the repository's root, printing just the number (no argument: the current volume); the bridge tells Hermes about it, so Hermes can change the volume when asked |
 | `keryx-bridge say TEXT`, `./say.sh "TEXT"` | say something on the board now (after an answer in progress); the bridge tells Hermes about `say.sh`, so Hermes can speak on its own: reminders, timers |
+| `keryx-bridge console LINE`, `./console.sh LINE` | run a command on the board's console over Wi-Fi and print its answer, e.g. `ring brightness night 5 22:00`, `status`, `config`; only a safe set (the rest needs the board on USB). Hermes knows about it |
 | `keryx-bridge mute [30m]`, `./mute.sh [30m]` / `./unmute.sh` | stop the board listening, optionally for a while (`90s`, `30m`, `2h`); only the microphone, it still speaks. The board keeps the state across restarts; Hermes knows about these too |
 
 Logs: `journalctl --user -u keryx-bridge -f`. Every line has the wall clock and, inside a conversation, the
@@ -138,6 +140,8 @@ On the bridge's port, with `Authorization: Bearer <KERYX_BRIDGE_TOKEN>`:
 - `POST /keryx/say` with `{"text": "…"}` — says it on the board and answers `{"said_s": …}` once it has been played
 - `POST /keryx/mute` with `{"value": true|false}` and optionally `{"for": seconds}` — mutes or unmutes the
   microphone; with `for` the bridge unmutes it when the time is up
+- `POST /keryx/console` with `{"line": "…"}` — runs it on the board's console and answers `{"output": "…", "ok": …}`;
+  the board runs only a safe set of commands (see `firmware/README.md`)
 
 Hermes can use these from its terminal tool, for example to change the volume when asked.
 

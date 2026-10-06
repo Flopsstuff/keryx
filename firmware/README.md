@@ -127,8 +127,29 @@ predecessors.
 - More console commands: `wake` acts as if the wake word fired (to test the bridge without saying it), and
   `log <tag|*> <none|error|warn|info|debug>` changes a log level until the next restart (the WebSocket library's
   own log is off: it reports every failed attempt while the bridge is down).
-- Tasks: core 1 has capture (wake word) and playback; core 0 USB, Wi-Fi, lwIP, the WebSocket client and the console.
-  USB audio runs at priority 20, above lwIP (18): at 5 it starved during Wi-Fi traffic and dropped audio.
+- Tasks: core 1 has capture (wake word) and playback; core 0 USB, Wi-Fi, lwIP, the WebSocket client, the console
+  and the panel. USB audio runs at priority 20, above lwIP (18): at 5 it starved during Wi-Fi traffic and dropped
+  audio.
+- The panel (`components/keryx_panel`), on the peripherals' I2C bus: an Adafruit I2C QT Rotary Encoder (seesaw, 0x36)
+  and an Adafruit NeoDriver (seesaw, 0x60) driving a ring of 24 WS2812. Turning the knob changes the volume, 2 steps (1
+  dB) a detent, clockwise louder; a short press ends a running conversation (`{"type":"stop"}` to the bridge) and
+  otherwise acts as the wake word; holding it for 1 s mutes or unmutes the microphone. The ring: a clock when idle
+  (amber marks at 12, 3, 6 and 9, the minute hand one blue pixel, the hour hand the two green pixels nearest its angle;
+  colours add up where they overlap), the same clock with red marks when muted, blue breathing while listening (the
+  whole conversation), a purple comet while waiting for the answer (the thinking sound), green following the speech
+  while answering, one orange pixel breathing without a bridge, and for 1.5 s after any volume change an arc as long as
+  the volume. Everything is drawn clockwise from 12 o'clock: `ring top <0-23>` names the pixel at 12 and `ring reverse`
+  flips the direction, as the ring is mounted. The brightness is at most a percentage of full, by day and by night:
+  `ring brightness` shows it, `ring brightness day|night <1-100> [HH:MM]` sets a level and when it begins (default 20 %
+  from 07:00, 5 % from 22:00). These settings live in NVS. The time comes over SNTP (`pool.ntp.org`), Europe/Warsaw
+  (`CLOCK_TZ` in `main.c`); until then there is no clock and it is day. 30 frames a second; only frames that changed go
+  out. Each module is looked for every 2 s until it answers, and again after an I2C error, so either can be missing or
+  plugged in later. `status` adds `panel encoder=ok ring=ok i2c_errors=0`.
+- The console over Wi-Fi: the bridge sends `{"type":"console","id":…,"line":…}`, the console task runs the line as if
+  typed and sends back what it printed (`keryx_console_submit`, up to 3 KB). Only a safe set runs this way
+  (`REMOTE_COMMANDS` in `main.c`: `status`, `config`, `volume`, `mute`, `wake`, `sound`, `ring`, `top`, `log`, `xvf
+  get`, `i2c scan`, `i2c read`, `net check`); `set`, `erase`, `wifi scan`, `bootloader`, `reboot`, `loop`, `xvf set` and
+  `i2c write` need the serial port. On the bridge host: `./console.sh ring brightness`.
 
 ### Bridge protocol v1
 
@@ -147,9 +168,12 @@ are PCM16 little-endian mono.
 | bridge → board | `{"type":"play_stop"}` | cut the answer now (10 ms fade) |
 | board → bridge | `{"type":"played"}` | the answer has really finished playing, or was cut |
 | bridge → board | `{"type":"volume","value":60}`, `{"type":"volume","delta":-10}`, `{"type":"volume"}` | set the volume, change it, or ask for it |
-| board → bridge | `{"type":"volume","value":60}` | the volume, after every change whoever made it (bridge, console, later a knob) |
+| board → bridge | `{"type":"volume","value":60}` | the volume, after every change whoever made it (bridge, console, the knob) |
 | bridge → board | `{"type":"mute","value":true}`, `{"type":"mute"}` | mute or unmute the microphone, or ask whether it is muted |
 | board → bridge | `{"type":"mute","value":true}` | the mute state, after every change whoever made it, and when asked; muting also ends a running stream at once |
+| board → bridge | `{"type":"stop"}` | the stop button: end the conversation — the bridge stops the answer (`play_stop`) and the stream (`listen_stop`) |
+| bridge → board | `{"type":"console","id":7,"line":"ring brightness"}` | run a console line, if it is in the safe set |
+| board → bridge | `{"type":"console","id":7,"output":"ok ring brightness …\n"}` | what it printed (`error not allowed over Wi-Fi …` otherwise) |
 
 Measured against a test server, through the echo reference (`loop on`): 24 and 16 kHz answers clean (residual
 −40 dB), `played` 3.06 s after the first byte of a 3 s answer, 90–170 ms after `play_stop`; uplink frames 18 ms

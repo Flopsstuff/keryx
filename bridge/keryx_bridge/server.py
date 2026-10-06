@@ -11,6 +11,9 @@ board → bridge
   {"type":"volume","value":N}                      the board's volume after any change (also "volume" in hello)
   {"type":"mute","value":true|false}               the microphone muted or not, after any change (also "muted" in
                                                    hello); muted, the board neither wakes nor streams
+  {"type":"stop"}                                  the stop button: end the conversation (the answer stops, then
+                                                   listen_stop); nothing to do when there is none
+  {"type":"console","id":N,"output":"…"}           what a console line printed (the answer to the one below)
 bridge → board
   {"type":"ready"}                                 the answer to a good hello
   {"type":"listen_stop"}                           stop streaming the microphone
@@ -20,11 +23,14 @@ bridge → board
   {"type":"volume","value":0..100} or "delta":±n   set the board's volume (100 = 0 dB, 0.5 dB a step)
   {"type":"mute","value":true|false}               mute or unmute the microphone (only the microphone: playback
                                                    goes on); without "value" a query
+  {"type":"console","id":N,"line":"…"}             run a line of the board's serial console; the board allows only
+                                                   a safe set (status, ring, volume, … — not set, erase, reboot)
 
 HTTP control on the same port, with the same token as `Authorization: Bearer …`: GET <path>/status;
 POST <path>/volume with {"value": 0..100} or {"delta": n}, which answers with the volume the board reports back;
 POST <path>/say with {"text": "…"}, which says it on the board and answers once it has been played;
-POST <path>/mute with {"value": true|false} and optionally {"for": seconds}, after which the bridge unmutes.
+POST <path>/mute with {"value": true|false} and optionally {"for": seconds}, after which the bridge unmutes;
+POST <path>/console with {"line": "…"}, which runs it on the board's console and answers with what it printed.
 
 The bridge checks the token against the KERYX_BRIDGE_TOKEN setting. Everything else (Hermes, xAI, the options)
 lives in voice.py.
@@ -61,6 +67,9 @@ BRIDGE_LINES = [
     f"volume control: {REPO}/set_volume.sh 0..100|+n|-n (no argument prints the current volume)",
     f"microphone control: {REPO}/mute.sh [30m|2h] stops Keryx listening (optionally for a while), {REPO}/unmute.sh "
     "starts it again; when the user asks you not to listen, say a short goodbye first, then mute",
+    f"board console: {REPO}/console.sh <command> runs a command on the board and prints its answer, e.g. "
+    "`ring brightness` (the LED ring's day/night brightness: `ring brightness night 5 22:00`), `status`, `config`; "
+    "only a safe set is allowed",
     f'speak on your own: {REPO}/say.sh "text" (says it on the speaker, after any answer in progress; for reminders, '
     "timers or anything the user asked to be told later)",
 ] if INSTALLED else [])
@@ -113,6 +122,8 @@ class Link:
         self.muted = None  # the microphone, as the board last reported it
         self.muted_until = None  # epoch seconds when the bridge will unmute, for a timed mute
         self.mute_changed = asyncio.Event()
+        self.console_waiting = {}  # id -> future of the board's output
+        self.console_id = 0
 
     async def send(self, message, conversation=None):
         if self.ws is None or self.ws.closed:
@@ -155,6 +166,28 @@ class Link:
             log("board: no mute reply within 2 s (firmware without mute?)")
             return None
         return self.muted
+
+    async def console(self, line, timeout=15):
+        """Runs a line on the board's console; returns what it printed, or None if it did not answer in time."""
+        self.console_id += 1
+        number = self.console_id
+        future = asyncio.get_running_loop().create_future()
+        self.console_waiting[number] = future
+        try:
+            if not await self.send({"type": "console", "id": number, "line": line}):
+                return None
+            log(f"board ← console {line!r}")
+            return await asyncio.wait_for(future, timeout)
+        except asyncio.TimeoutError:
+            log(f"board: no console answer within {timeout} s (firmware without the console over Wi-Fi?)")
+            return None
+        finally:
+            self.console_waiting.pop(number, None)
+
+    def on_console(self, number, output):
+        future = self.console_waiting.get(number)
+        if future is not None and not future.done():
+            future.set_result(output)
 
     async def set_volume(self, message):
         """Sends a volume message and returns the volume the board reports back, or None after 2 s."""
@@ -399,6 +432,27 @@ class Bridge:
         elif self.link.muted_until is not None and self.unmute_task is None:
             self.unmute_task = asyncio.create_task(self.unmute_after(max(0.0, self.link.muted_until - time.time())))
 
+    async def http_console(self, request):
+        """POST {"line": "…"}: runs it on the board's console; answers with what it printed and whether it ended ok."""
+        if not self.authorized(request):
+            return web.json_response({"error": "bad token"}, status=401)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        line = str(body.get("line", "")).strip() if isinstance(body, dict) else ""
+        if not line or len(line) > 120 or "\n" in line:
+            return web.json_response({"error": 'send {"line": "…"}, one line up to 120 characters'}, status=400)
+        if self.link.ws is None:
+            return web.json_response({"error": "no board connected"}, status=503)
+        output = await self.link.console(line, timeout=70 if line.startswith("top") else 15)
+        if output is None:
+            return web.json_response({"error": "the board did not answer (firmware without the console?)"},
+                                     status=504)
+        last = output.strip().splitlines()[-1] if output.strip() else ""
+        return web.json_response({"output": output, "ok": not last.startswith("error") and
+                                  not last.startswith("unknown command")})
+
     async def http_say(self, request):
         """POST {"text": "…"}: says it on the board; answers once the board has played it."""
         if not self.authorized(request):
@@ -487,6 +541,16 @@ class Bridge:
             if self.link.muted and conv is not None and getattr(conv, "task", None):
                 log("microphone muted: conversation ended", conv)
                 conv.task.cancel()
+        elif kind == "console":
+            output = str(message.get("output", ""))
+            log(f"board → console: {output.strip().splitlines()[-1] if output.strip() else '(nothing)'}", conv)
+            self.link.on_console(message.get("id"), output)
+        elif kind == "stop":
+            if conv is not None and getattr(conv, "task", None):
+                log("board → stop button: conversation ended", conv)
+                conv.task.cancel()
+            else:
+                log("board → stop button, no conversation")
         else:
             log(f"board → {json.dumps(message, ensure_ascii=False)[:200]}", conv)
 
@@ -511,6 +575,7 @@ async def serve(args):
         app.router.add_post(args.path + "/volume", bridge.http_volume)
         app.router.add_post(args.path + "/say", bridge.http_say)
         app.router.add_post(args.path + "/mute", bridge.http_mute)
+        app.router.add_post(args.path + "/console", bridge.http_console)
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         await web.TCPSite(runner, args.host, args.port).start()

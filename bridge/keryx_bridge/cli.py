@@ -8,6 +8,7 @@
   keryx-bridge say TEXT          say something on the board through a running bridge (TEXT or stdin)
   keryx-bridge mute [30m|2h]     stop the board listening (for a while: s, m or h; a bare number is minutes)
   keryx-bridge unmute            start it listening again
+  keryx-bridge console LINE      run a line of the board's console through a running bridge (a safe set only)
 """
 
 import argparse
@@ -240,6 +241,12 @@ def main():
         status, answer = asyncio.run(control("POST", "say", {"text": text}, timeout=200))
         print(json.dumps(answer, ensure_ascii=False))
         sys.exit(0 if status == 200 else 1)
+    elif command == "console" and rest:
+        status, answer = asyncio.run(control("POST", "console", {"line": " ".join(rest)}, timeout=80))
+        if status == 200:
+            print(answer["output"], end="")
+            sys.exit(0 if answer["ok"] else 1)
+        sys.exit(json.dumps(answer, ensure_ascii=False))
     else:
         sys.exit(f"unknown command {' '.join(argv)!r}\n\n{__doc__.strip()}")
 

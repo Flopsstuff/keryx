@@ -21,5 +21,13 @@ typedef bool (*keryx_console_command_fn)(const char *cmd);
 // Call after uac_device_init(). The banner is printed whenever a host opens the port; `command` may be NULL.
 esp_err_t keryx_console_start(const char *banner, keryx_console_command_fn command);
 
+// What a submitted line printed, at most 3 KB; valid only during the call.
+typedef void (*keryx_console_done_fn)(int id, const char *output);
+
+// Runs a line from elsewhere (the console over Wi-Fi) in the console task, as if typed, and hands what it printed
+// to `done`, called from the console task. Which lines may run is the caller's business. False if the line is too
+// long (127 characters at most) or two are already waiting.
+bool keryx_console_submit(int id, const char *line, keryx_console_done_fn done);
+
 // Writes a line (or part of one) to the host, as printf.
 void keryx_console_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));

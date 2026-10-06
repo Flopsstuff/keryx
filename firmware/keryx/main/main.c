@@ -36,6 +36,7 @@
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
 #include "esp_log.h"
+#include "esp_netif_sntp.h"
 #include "esp_system.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -46,6 +47,7 @@
 #include "keryx_console.h"
 #include "keryx_link.h"
 #include "keryx_net.h"
+#include "keryx_panel.h"
 #include "keryx_sounds.h"
 #include "kww_decimate.h"
 #include "kww_frontend.h"
@@ -127,6 +129,10 @@ static esp_timer_handle_t settings_save_timer;  // volume and mute go to NVS a m
 // the microphone muted: nothing captured leaves the board (bridge, USB) and the wake word does not run; kept in NVS
 #define MUTE_SAVE_MS 200        // sooner than the volume: a mute that a power cut forgets is no mute
 static volatile bool mic_muted;
+static int ring_top;          // the ring's pixel at 12 o'clock, kept in NVS (`ring top`)
+static bool ring_reversed;    // its pixel numbers run anticlockwise (`ring reverse`)
+static int ring_day = 20, ring_night = 5;           // brightness in % (`ring brightness`)
+static int ring_day_from = 7 * 60, ring_night_from = 22 * 60;  // minutes after midnight
 static volatile uint32_t speaker_volume = 100;
 static volatile bool speaker_muted;
 static volatile int64_t last_playback_us;
@@ -135,6 +141,7 @@ static volatile int64_t last_playback_us;
 static volatile bool wake_sound_requested;
 static volatile int mute_sound_requested;  // 1: muted, 2: unmuted
 static volatile bool thinking_requested;
+static volatile int bridge_peak;  // of the last block of the bridge's answer, for the ring
 static volatile int64_t thinking_started_us;
 
 static void settings_save(void *arg)
@@ -143,6 +150,12 @@ static void settings_save(void *arg)
     if (nvs_open("keryx", NVS_READWRITE, &nvs) == ESP_OK) {
         nvs_set_u8(nvs, "volume", (uint8_t)volume);
         nvs_set_u8(nvs, "muted", mic_muted ? 1 : 0);
+        nvs_set_u8(nvs, "ring_top", (uint8_t)ring_top);
+        nvs_set_u8(nvs, "ring_rev", ring_reversed ? 1 : 0);
+        nvs_set_u8(nvs, "ring_day", (uint8_t)ring_day);
+        nvs_set_u8(nvs, "ring_night", (uint8_t)ring_night);
+        nvs_set_u16(nvs, "ring_day_at", (uint16_t)ring_day_from);
+        nvs_set_u16(nvs, "ring_night_at", (uint16_t)ring_night_from);
         nvs_commit(nvs);
         nvs_close(nvs);
     }
@@ -181,12 +194,32 @@ static void volume_set(int value)
 static void settings_load(void)
 {
     nvs_handle_t nvs;
-    uint8_t stored = VOLUME_DEFAULT, muted = 0;
+    uint8_t stored = VOLUME_DEFAULT, muted = 0, top = 0, reversed = 0;
     if (nvs_open("keryx", NVS_READONLY, &nvs) == ESP_OK) {
         nvs_get_u8(nvs, "volume", &stored);
         nvs_get_u8(nvs, "muted", &muted);
+        nvs_get_u8(nvs, "ring_top", &top);
+        nvs_get_u8(nvs, "ring_rev", &reversed);
+        uint8_t day, night;
+        uint16_t day_from, night_from;
+        if (nvs_get_u8(nvs, "ring_day", &day) == ESP_OK && day >= 1 && day <= 100) {
+            ring_day = day;
+        }
+        if (nvs_get_u8(nvs, "ring_night", &night) == ESP_OK && night >= 1 && night <= 100) {
+            ring_night = night;
+        }
+        if (nvs_get_u16(nvs, "ring_day_at", &day_from) == ESP_OK && day_from < 24 * 60) {
+            ring_day_from = day_from;
+        }
+        if (nvs_get_u16(nvs, "ring_night_at", &night_from) == ESP_OK && night_from < 24 * 60) {
+            ring_night_from = night_from;
+        }
         nvs_close(nvs);
     }
+    keryx_panel_set_brightness(ring_day, ring_night, ring_day_from, ring_night_from);
+    ring_top = top;
+    ring_reversed = reversed != 0;
+    keryx_panel_set_layout(ring_top, ring_reversed);
     const esp_timer_create_args_t timer = {.callback = settings_save, .name = "settings_save"};
     esp_timer_create(&timer, &settings_save_timer);
     mic_muted = muted != 0;
@@ -303,10 +336,13 @@ static void playback_task(void *arg)
             int level = in[i] < 0 ? -in[i] : in[i];
             host_peak = level > host_peak ? level : host_peak;
         }
+        int peak = 0;
         for (int i = 0; i < BLOCK_FRAMES; i++) {
             int level = bridge[i] < 0 ? -bridge[i] : bridge[i];
-            host_peak = level > host_peak ? level : host_peak;
+            peak = level > peak ? level : peak;
         }
+        bridge_peak = peak;
+        host_peak = peak > host_peak ? peak : host_peak;
         if (thinking_requested && (host_peak > HOST_AUDIBLE ||
                                    esp_timer_get_time() - thinking_started_us > THINKING_MAX_MS * 1000LL)) {
             thinking_requested = false;  // the answer has started, or nobody stopped it
@@ -694,12 +730,18 @@ static void i2c_scan_command(void)
     keryx_console_printf("ok %d devices\n", found);
 }
 
-// "i2c read <addr> <n> [bytes...]": write the bytes (a register address), wait 5 ms (seesaw needs the time), read n
-// bytes. "i2c write <addr> <bytes...>". Numbers in C notation (0x36). On the peripherals' bus; the XVF3800 has `xvf`.
+// "i2c read [xvf] <addr> <n> [bytes...]": write the bytes (a register address), wait 5 ms (seesaw needs the time),
+// read n bytes. "i2c write [xvf] <addr> <bytes...>". Numbers in C notation (0x36). On the peripherals' bus, or with
+// `xvf` on the XVF3800's (the codec at 0x18; the XVF3800 itself has the `xvf` command).
 static void i2c_raw_command(const char *args)
 {
     const bool read = strncmp(args, "read ", 5) == 0;
     char *p = (char *)args + (read ? 5 : 6);
+    i2c_master_bus_handle_t bus = periph_bus;
+    if (strncmp(p, "xvf ", 4) == 0) {
+        bus = xvf_i2c_bus();
+        p += 4;
+    }
     const long addr = strtol(p, &p, 0);
     const long n = read ? strtol(p, &p, 0) : 0;
     uint8_t out[16], in[32];
@@ -711,12 +753,12 @@ static void i2c_raw_command(const char *args)
         }
         out[count++] = (uint8_t)v;
     }
-    if (periph_bus == NULL) {
+    if (bus == NULL) {
         keryx_console_printf("error no peripheral bus\n");
         return;
     }
     if (addr < 0x08 || addr > 0x77 || n < 0 || n > (long)sizeof(in) || (read ? n == 0 : count == 0)) {
-        keryx_console_printf("error usage: i2c read <addr> <n> [bytes...] | i2c write <addr> <bytes...>\n");
+        keryx_console_printf("error usage: i2c read [xvf] <addr> <n> [bytes...] | i2c write [xvf] <addr> <bytes...>\n");
         return;
     }
     i2c_device_config_t cfg = {
@@ -725,7 +767,7 @@ static void i2c_raw_command(const char *args)
         .scl_speed_hz = 100000,
     };
     i2c_master_dev_handle_t dev;
-    esp_err_t err = i2c_master_bus_add_device(periph_bus, &cfg, &dev);
+    esp_err_t err = i2c_master_bus_add_device(bus, &cfg, &dev);
     if (err == ESP_OK) {
         if (count > 0) {
             err = i2c_master_transmit(dev, out, count, 50);
@@ -746,6 +788,32 @@ static void i2c_raw_command(const char *args)
         len += snprintf(line + len, sizeof(line) - len, " %02x", in[i]);
     }
     keryx_console_printf("%s\n", line);
+}
+
+// "ring brightness [day|night <1-100> [HH:MM]]": the ring's brightness by day and by night, and when each begins
+static void ring_brightness_command(const char *args)
+{
+    if (*args != '\0') {
+        char which[8], at[8] = "";
+        int percent, hours, minutes;
+        const int n = sscanf(args, "%7s %d %7s", which, &percent, at);
+        const bool day = strcmp(which, "day") == 0;
+        if (n < 2 || (!day && strcmp(which, "night") != 0) || percent < 1 || percent > 100 ||
+            (n == 3 && (sscanf(at, "%d:%d", &hours, &minutes) != 2 || hours < 0 || hours > 23 || minutes < 0 ||
+                        minutes > 59))) {
+            keryx_console_printf("error usage: ring brightness [day|night <1-100> [HH:MM]]\n");
+            return;
+        }
+        *(day ? &ring_day : &ring_night) = percent;
+        if (n == 3) {
+            *(day ? &ring_day_from : &ring_night_from) = hours * 60 + minutes;
+        }
+        keryx_panel_set_brightness(ring_day, ring_night, ring_day_from, ring_night_from);
+        settings_save_in(VOLUME_SAVE_MS);
+    }
+    keryx_console_printf("ok ring brightness day=%d%% from %02d:%02d, night=%d%% from %02d:%02d, now %s\n", ring_day,
+                         ring_day_from / 60, ring_day_from % 60, ring_night, ring_night_from / 60,
+                         ring_night_from % 60, keryx_panel_night() ? "night" : "day");
 }
 
 // Serial port commands beyond keryx_console's own.
@@ -809,6 +877,28 @@ static bool console_command(const char *cmd)
         xvf_command(cmd + 4);
         return true;
     }
+    if (strcmp(cmd, "ring brightness") == 0 || strncmp(cmd, "ring brightness ", 16) == 0) {
+        ring_brightness_command(cmd + 15 + (cmd[15] == ' '));
+        return true;
+    }
+    if (strcmp(cmd, "ring") == 0 || strncmp(cmd, "ring top ", 9) == 0 || strcmp(cmd, "ring reverse") == 0) {
+        // where 12 o'clock is and which way is clockwise, as the ring is mounted
+        if (cmd[4] != '\0' && cmd[5] == 't') {
+            char *end;
+            long top = strtol(cmd + 9, &end, 10);
+            if (*end != '\0' || top < 0 || top > 23) {
+                keryx_console_printf("error usage: ring top <0-23>\n");
+                return true;
+            }
+            ring_top = (int)top;
+        } else if (cmd[4] != '\0') {
+            ring_reversed = !ring_reversed;
+        }
+        keryx_panel_set_layout(ring_top, ring_reversed);
+        settings_save_in(VOLUME_SAVE_MS);
+        keryx_console_printf("ok ring top=%d reversed=%d\n", ring_top, ring_reversed ? 1 : 0);
+        return true;
+    }
     if (strcmp(cmd, "i2c scan") == 0) {
         i2c_scan_command();
         return true;
@@ -848,6 +938,32 @@ static void status_xvf(void)
         keryx_console_printf("xvf=no_answer i2s=%s\n", i2s ? "running" : "no_clock");
     }
     keryx_console_printf("volume=%d muted=%d\n", volume, mic_muted ? 1 : 0);
+    char line[96];
+    keryx_panel_report(line, sizeof(line));
+    keryx_console_printf("%s\n", line);
+}
+
+// The console over Wi-Fi ({"type":"console"} from the bridge): only commands that cannot lock us out, brick the
+// board or break the echo cancellation. Not: set, erase, wifi scan, bootloader, reboot, loop, xvf set, i2c write.
+static const char *const REMOTE_COMMANDS[] = {
+    "status", "config", "volume", "mute", "wake", "sound", "ring", "top", "log", "xvf get", "i2c scan", "i2c read",
+    "net check",
+};
+
+static void bridge_console(int id, const char *line)
+{
+    bool allowed = false;
+    for (size_t i = 0; i < sizeof(REMOTE_COMMANDS) / sizeof(REMOTE_COMMANDS[0]) && !allowed; i++) {
+        const size_t n = strlen(REMOTE_COMMANDS[i]);
+        allowed = strncmp(line, REMOTE_COMMANDS[i], n) == 0 && (line[n] == '\0' || line[n] == ' ');
+    }
+    if (!allowed) {
+        keryx_link_console_reply(id, "error not allowed over Wi-Fi (only on the serial port)\n");
+    } else if (!keryx_console_submit(id, line, keryx_link_console_reply)) {
+        keryx_link_console_reply(id, "error busy, or the line is too long\n");
+    } else {
+        keryx_console_printf("bridge console: %s\n", line);
+    }
 }
 
 // {"type":"volume"} from the bridge
@@ -874,6 +990,57 @@ static void bridge_sound(const char *name)
     } else if (strcmp(name, "thinking") == 0 || strcmp(name, "stop") == 0) {
         sound_thinking(name[0] == 't');
     }
+}
+
+// The panel: the encoder and the ring (components/keryx_panel)
+
+#define CLOCK_TZ "CET-1CEST,M3.5.0,M10.5.0/3"  // Europe/Warsaw, as POSIX TZ
+#define KNOB_VOLUME_STEP 2  // per detent: 0.5 dB a step, so 1 dB a click, the whole range in 2.5 turns
+
+static void panel_turned(int steps)
+{
+    volume_set(volume + steps * KNOB_VOLUME_STEP);
+}
+
+// A short press ends a running conversation, and otherwise acts as the wake word.
+static void panel_pressed(void)
+{
+    if (keryx_link_streaming() || keryx_link_playing()) {
+        keryx_console_printf("button: stop\n");
+        keryx_link_stop();
+    } else if (!mic_muted) {
+        keryx_console_printf("button: wake\n");
+        wake_sound_requested = true;
+        keryx_link_wake(1.0f);
+    }
+}
+
+// A long press mutes or unmutes the microphone.
+static void panel_long_pressed(void)
+{
+    mute_set(!mic_muted);
+}
+
+static keryx_panel_state_t panel_state(void)
+{
+    if (mic_muted) {
+        return KERYX_PANEL_MUTED;
+    }
+    if (!keryx_link_ready()) {
+        return KERYX_PANEL_OFFLINE;
+    }
+    if (keryx_link_playing()) {
+        return KERYX_PANEL_SPEAKING;
+    }
+    if (thinking_requested) {
+        return KERYX_PANEL_THINKING;
+    }
+    return keryx_link_streaming() ? KERYX_PANEL_LISTENING : KERYX_PANEL_IDLE;
+}
+
+static int panel_speech_level(void)
+{
+    return bridge_peak;
 }
 
 void app_main(void)
@@ -930,11 +1097,28 @@ void app_main(void)
         ESP_LOGE(TAG, "Wi-Fi did not start: %s", esp_err_to_name(err));
     }
     keryx_net_status_hook(status_xvf);
+    // the clock on the ring: SNTP keeps trying until Wi-Fi is up, then every hour
+    setenv("TZ", CLOCK_TZ, 1);
+    tzset();
+    esp_sntp_config_t sntp = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    sntp.wait_for_sync = false;
+    if (esp_netif_sntp_init(&sntp) != ESP_OK) {
+        ESP_LOGW(TAG, "SNTP did not start: the ring shows no clock");
+    }
     const keryx_link_callbacks_t link_callbacks = {.sound = bridge_sound, .volume = bridge_volume,
                                                    .get_volume = get_volume, .mute = mute_set,
-                                                   .get_muted = get_muted};
+                                                   .get_muted = get_muted, .console = bridge_console};
     err = keryx_link_start(&link_callbacks);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "bridge link did not start: %s", esp_err_to_name(err));
+    }
+    if (periph_bus != NULL) {
+        const keryx_panel_callbacks_t panel_callbacks = {.turned = panel_turned, .pressed = panel_pressed,
+                                                         .long_pressed = panel_long_pressed, .state = panel_state,
+                                                         .volume = get_volume, .speech_level = panel_speech_level};
+        err = keryx_panel_start(periph_bus, &panel_callbacks);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "panel did not start: %s", esp_err_to_name(err));
+        }
     }
 }

@@ -16,7 +16,7 @@ Hermes' OpenAI-compatible API, turns the reply into speech with xAI TTS and stre
 | `bridge/` | the voice bridge, an installable Python package (`keryx_bridge`, command `keryx-bridge`) run as a systemd user service |
 | `wakeword/` | data generation, training (PyTorch) and C export of the wake word model |
 | `tools/` | Mac bench tools: `converse.py` (the bridge pipeline over the board's USB sound card), `listen.py`, the mic-array `dashboard`, `xvf` control client |
-| `setup.sh`, `say.sh`, `set_volume.sh`, `mute.sh`, `unmute.sh` | one-step install on the bridge host; speak, set the volume, mute the microphone through a running bridge |
+| `setup.sh`, `say.sh`, `set_volume.sh`, `mute.sh`, `unmute.sh`, `console.sh` | one-step install on the bridge host; speak, set the volume, mute the microphone, run console commands through a running bridge |
 
 ## Documentation
 
@@ -96,11 +96,12 @@ from the ASR beam. UART0's pins carry I2S, so all logging is over USB. Two thing
   in the vendored `usb_device_uac`, listed in its `KERYX.md`) — do not go back to FIFO-count feedback.
 
 **Firmware `keryx`.** One capture task reads I2S and feeds the wake word (48 → 16 kHz esp-dsp FIR, micro_speech
-features, streaming model), the USB sound card and the bridge link. A separate playback task mixes the USB
-speaker, the bridge's audio (24 or 16 kHz, brought to 48 kHz by its own FIR upsampler) and the board's sounds, and
-applies the volume (0–100, kept in NVS) before the point the AEC reference is taken from. Core 1 runs capture
-(wake word) and playback; core 0 runs USB (priority 20, above lwIP's 18 — otherwise Wi-Fi traffic starves the USB
-audio), Wi-Fi, lwIP (pinned to core 0), the WebSocket client and the console.
+features, streaming model), the USB sound card and the bridge link. A separate playback task mixes the USB speaker, the
+bridge's audio (24 or 16 kHz, brought to 48 kHz by its own FIR upsampler) and the board's sounds, and applies the volume
+(0–100, kept in NVS) before the point the AEC reference is taken from. Core 1 runs capture (wake word) and playback;
+core 0 runs USB (priority 20, above lwIP's 18 — otherwise Wi-Fi traffic starves the USB audio), Wi-Fi, lwIP (pinned to
+core 0), the WebSocket client, the console and the panel (`components/keryx_panel`: the knob and the LED ring, on an I2C
+bus of their own on D0/D3 — not the XVF3800's, which the encoder hangs).
 
 The features must stay bit-exact with training: `components/micro_frontend` (vendored from pymicro-features) and
 the FFT must not be swapped, and `components/keryx_wakeword/kww_weights.h` / `include/kww_config.h` are generated
@@ -114,12 +115,12 @@ Pairing (Wi-Fi, bridge URL, token, volume) lives in NVS at 0x9000: it survives `
 but `esptool erase_flash` wipes it. That is why a release is separate images at their offsets, never one merged
 image, and why `partitions.csv` must keep NVS at 0x9000 (then two 3 MB OTA slots and a storage partition).
 
-**Board ⇄ bridge protocol v1** is defined in two places that must change together: `firmware/README.md`
-("Bridge protocol v1", the `keryx_link` component) and the docstring of `bridge/keryx_bridge/server.py`. JSON text
-frames for control (`hello`/`ready`, `wake`, `listen_stop`, `play_start`/`play_end`/`play_stop`, `played`,
-`sound`, `volume`); binary frames for 16 kHz PCM up and 24 or 16 kHz PCM down (the `rate` of `play_start`). The
-board keeps Wi-Fi power save off from `wake` or `play_start` until 5 s after the stream and playback end; when
-idle it sleeps (DTIM 3), so the first message to an idle board can take up to ~300 ms.
+**Board ⇄ bridge protocol v1** is defined in two places that must change together: `firmware/README.md` ("Bridge
+protocol v1", the `keryx_link` component) and the docstring of `bridge/keryx_bridge/server.py`. JSON text frames for
+control (`hello`/`ready`, `wake`, `listen_stop`, `play_start`/`play_end`/`play_stop`, `played`, `sound`, `volume`,
+`mute`, `stop`, `console`); binary frames for 16 kHz PCM up and 24 or 16 kHz PCM down (the `rate` of `play_start`). The
+board keeps Wi-Fi power save off from `wake` or `play_start` until 5 s after the stream and playback end; when idle it
+sleeps (DTIM 3), so the first message to an idle board can take up to ~300 ms.
 
 **Bridge.** `keryx_bridge/voice.py` holds the whole pipeline (conversations, STT, Hermes, TTS, echo filter,
 logging) behind three adapters — a microphone, a speaker and a board — so `server.py` (WebSocket board) and
@@ -141,7 +142,8 @@ logging) behind three adapters — a microphone, a speaker and a board — so `s
   status" section the bridge fills per request: board volume, where the bridge's code/config/service are, and
   `set_volume.sh` / `say.sh` / `mute.sh` so Hermes on the same host can use them;
 - HTTP control on the bridge port with the board token: `GET /keryx/status`, `POST /keryx/volume`,
-  `POST /keryx/say`, `POST /keryx/mute` (a timed mute is the bridge's timer, lost if the bridge restarts).
+  `POST /keryx/say`, `POST /keryx/mute` (a timed mute is the bridge's timer, lost if the bridge restarts),
+  `POST /keryx/console` (a safe set of console commands, checked on the board).
 
 Hermes is reached only through its API server (`/v1/chat/completions`, streamed, with `hermes.tool.progress`
 events); per-request options go in `model_options`. Latency is dominated by Hermes' agent loop, not by the audio
