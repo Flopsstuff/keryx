@@ -50,9 +50,10 @@ firmware/release.sh                      # build into firmware/release/ (Git LFS
 bridge/.venv/bin/python firmware/flash_release.py [--port DEV]   # flash the release, no ESP-IDF (needs esptool)
 ```
 
-A release is: commit the firmware change → `firmware/release.sh` → commit `firmware/release/`. `release.sh` builds
-from the committed tree; the version is the last commit that touched `firmware/` outside `release/`, with
-`-dirty` when there are uncommitted changes there.
+A release is: commit the firmware change → `firmware/release.sh` → commit `firmware/release/` → push →
+`firmware/publish.sh` (the GitHub release that boards take with `ota update`; `tools/ota_push.py` flashes a local build
+over Wi-Fi, see docs/building.md). `release.sh` builds from the committed tree; the version is the last commit that
+touched `firmware/` outside `release/`, with `-dirty` when there are uncommitted changes there.
 
 Settings live in each project's `sdkconfig.defaults`; `sdkconfig` is generated — delete it after changing the
 defaults.
@@ -60,10 +61,10 @@ defaults.
 The board's console is a serial port: `/dev/cu.usbmodemkeryx_*` on macOS, `/dev/ttyACM*` on Linux. For the first ~4 s
 after boot it is the USB serial/JTAG console (USB 303A:1001), then TinyUSB takes the port (303A:8000, next to the sound
 card). Commands include `status`, `top`, `log`, `wake`, `volume [0-100|up|down]`, `sound wake|thinking|stop`, `loop
-on|mic|off`, `xvf get|set`, `i2c scan|read|write`, pairing with `set ssid|password|bridge|token`, `config`, `erase`,
-`wifi scan`, `net check <host> <port>`, and `bootloader` / `reboot`; every answer ends with an `ok` or `error` line. The
-full list is in `firmware/README.md#keryx`. Only one process can hold the port, so stop `converse.py` / `listen.py` /
-monitors before flashing.
+on|mic|off`, `xvf get|set`, `i2c scan|read|write`, `ring …`, `ota …`, pairing with `set ssid|password|bridge|token`,
+`config`, `erase`, `wifi scan`, `net check <host> <port>`, and `bootloader` / `reboot`; every answer ends with an `ok`
+or `error` line. The full list is in `firmware/README.md#keryx`. Only one process can hold the port, so stop
+`converse.py` / `listen.py` / monitors before flashing.
 
 Bridge:
 

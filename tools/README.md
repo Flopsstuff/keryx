@@ -63,3 +63,17 @@ repository's `.env` works in a checkout) and its options (`--echo`, `--follow-up
 
 The board's microphone and speaker share one duplex stream: CoreAudio refuses a second stream on the same USB
 device. `--latency` sets the output buffering (60 ms; less makes holes whenever Python is busy).
+
+## `ota_push` — flash a build over Wi-Fi
+
+Serves `../firmware/keryx/build/keryx.bin` (or `--image`) over http from this machine and tells the board to fetch
+it with `ota url`, through the bridge's console or over USB:
+
+```bash
+.venv/bin/python ota_push.py --bridge http://<bridge host>:8765   # token from ../.env (KERYX_BRIDGE_TOKEN)
+.venv/bin/python ota_push.py --usb
+```
+
+The board restarts into the image on trial (rolled back if it restarts within 30 s); this machine's firewall must
+let it in on port 8070 (`--port`). Releases for everyone go through GitHub instead: see
+[docs/building.md](../docs/building.md#updates-over-wi-fi).

@@ -445,7 +445,7 @@ class Bridge:
             return web.json_response({"error": 'send {"line": "…"}, one line up to 120 characters'}, status=400)
         if self.link.ws is None:
             return web.json_response({"error": "no board connected"}, status=503)
-        output = await self.link.console(line, timeout=70 if line.startswith("top") else 15)
+        output = await self.link.console(line, timeout=70 if line.startswith(("top", "ota")) else 15)
         if output is None:
             return web.json_response({"error": "the board did not answer (firmware without the console?)"},
                                      status=504)

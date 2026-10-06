@@ -47,6 +47,7 @@
 #include "keryx_console.h"
 #include "keryx_link.h"
 #include "keryx_net.h"
+#include "keryx_ota.h"
 #include "keryx_panel.h"
 #include "keryx_sounds.h"
 #include "kww_decimate.h"
@@ -819,6 +820,9 @@ static void ring_brightness_command(const char *args)
 // Serial port commands beyond keryx_console's own.
 static bool console_command(const char *cmd)
 {
+    if (keryx_ota_command(cmd)) {
+        return true;
+    }
     if (keryx_net_command(cmd)) {
         if (strncmp(cmd, "set bridge ", 11) == 0 || strncmp(cmd, "set token ", 10) == 0 || strcmp(cmd, "erase") == 0) {
             keryx_link_restart();
@@ -945,9 +949,10 @@ static void status_xvf(void)
 
 // The console over Wi-Fi ({"type":"console"} from the bridge): only commands that cannot lock us out, brick the
 // board or break the echo cancellation. Not: set, erase, wifi scan, bootloader, reboot, loop, xvf set, i2c write.
+// `ota` is in: a new image that does not survive 30 s is rolled back by the bootloader.
 static const char *const REMOTE_COMMANDS[] = {
     "status", "config", "volume", "mute", "wake", "sound", "ring", "top", "log", "xvf get", "i2c scan", "i2c read",
-    "net check",
+    "net check", "ota",
 };
 
 static void bridge_console(int id, const char *line)
@@ -1059,6 +1064,7 @@ void app_main(void)
         nvs_flash_init();
     }
     settings_load();
+    keryx_ota_start_trial();
 
     // the model was trained on the ASR channel at this gain; without it everything arrives 12 dB quieter
     esp_err_t err = xvf_control_init(PIN_I2C_SDA, PIN_I2C_SCL);
@@ -1115,7 +1121,8 @@ void app_main(void)
     if (periph_bus != NULL) {
         const keryx_panel_callbacks_t panel_callbacks = {.turned = panel_turned, .pressed = panel_pressed,
                                                          .long_pressed = panel_long_pressed, .state = panel_state,
-                                                         .volume = get_volume, .speech_level = panel_speech_level};
+                                                         .volume = get_volume, .speech_level = panel_speech_level,
+                                                         .update_progress = keryx_ota_progress};
         err = keryx_panel_start(periph_bus, &panel_callbacks);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "panel did not start: %s", esp_err_to_name(err));

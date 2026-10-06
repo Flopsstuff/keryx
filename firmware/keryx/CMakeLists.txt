@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 set(EXTRA_COMPONENT_DIRS ../components/xvf_control ../components/keryx_wakeword ../components/micro_frontend
                          ../components/keryx_console ../components/keryx_net ../components/keryx_link
-                         ../components/keryx_panel)
+                         ../components/keryx_panel ../components/keryx_ota)
 # The version is the last commit that touched firmware/, "-dirty" if firmware/ has uncommitted changes: the rest of
 # the repository (host tools, prompts) does not change what runs on the board.
 set(fw_dir ${CMAKE_CURRENT_LIST_DIR}/..)

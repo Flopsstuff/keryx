@@ -118,6 +118,12 @@ Every command answers with a line starting with `ok` or `error`. `config` shows 
 only as `(set)`), `erase` forgets them all. The full list of console commands is in
 [firmware/README.md](../firmware/README.md#keryx).
 
+## Later: updates over Wi-Fi
+
+Once a board runs a release with updates over Wi-Fi, newer releases need no cable: `./console.sh ota update` on the
+bridge host (or `ota update` on the console) installs the latest GitHub release. See
+[building.md](building.md#updates-over-wi-fi).
+
 ## Troubleshooting
 
 | Symptom | What to do |

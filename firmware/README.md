@@ -148,8 +148,11 @@ predecessors.
 - The console over Wi-Fi: the bridge sends `{"type":"console","id":…,"line":…}`, the console task runs the line as if
   typed and sends back what it printed (`keryx_console_submit`, up to 3 KB). Only a safe set runs this way
   (`REMOTE_COMMANDS` in `main.c`: `status`, `config`, `volume`, `mute`, `wake`, `sound`, `ring`, `top`, `log`, `xvf
-  get`, `i2c scan`, `i2c read`, `net check`); `set`, `erase`, `wifi scan`, `bootloader`, `reboot`, `loop`, `xvf set` and
-  `i2c write` need the serial port. On the bridge host: `./console.sh ring brightness`.
+  get`, `i2c scan`, `i2c read`, `net check`, `ota`); `set`, `erase`, `wifi scan`, `bootloader`, `reboot`, `loop`, `xvf
+  set` and `i2c write` need the serial port. On the bridge host: `./console.sh ring brightness`.
+- Updates over Wi-Fi (`components/keryx_ota`): `ota`, `ota check`, `ota update [force]` (the latest GitHub release),
+  `ota url <url>` (any image); a new image is on trial for 30 s and the bootloader rolls back one that restarts sooner.
+  See [docs/building.md](../docs/building.md#updates-over-wi-fi).
 
 ### Bridge protocol v1
 

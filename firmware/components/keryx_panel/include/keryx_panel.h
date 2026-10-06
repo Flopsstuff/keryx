@@ -29,6 +29,7 @@ typedef struct {
     keryx_panel_state_t (*state)(void);  // asked every frame
     int (*volume)(void);                 // 0..100; shown on the ring for a moment whenever it changes
     int (*speech_level)(void);           // peak of the answer being played, 0..32767
+    int (*update_progress)(void);        // 0..100 while new firmware downloads (shown above everything), else -1
 } keryx_panel_callbacks_t;
 
 // Starts the panel task; call once the callbacks can be used.

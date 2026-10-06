@@ -92,6 +92,8 @@ index or HEAD changes.
 ```bash
 firmware/release.sh                 # refuses with uncommitted changes under firmware/
 git add firmware/release && git commit -m "📦 Release $(cat firmware/release/VERSION)"
+git push
+firmware/publish.sh                 # the GitHub release that boards update from
 ```
 
 `release.sh` reconfigures and builds `firmware/keryx`, then copies into `firmware/release/` the four parts
@@ -100,8 +102,34 @@ git add firmware/release && git commit -m "📦 Release $(cat firmware/release/V
 merged image on purpose: a merged image fills the gaps with 0xFF, and NVS — the pairing — lies in such a gap at
 0x9000. Only the latest release is kept; the `*.bin` files go to Git LFS.
 
+`publish.sh` makes the same files a GitHub release, `firmware-<version>`, marked latest, with the firmware commits
+since the previous one as notes; it refuses a dirty build, uncommitted `release/` or an unpushed commit. Boards
+take it with `ota update` (below).
+
+## Updates over Wi-Fi
+
+The app lives in two 3 MB slots; an update writes the other one and restarts into it (`components/keryx_ota`). On
+the console, over USB or over Wi-Fi (`./console.sh` on the bridge host):
+
+```
+ota                    the running version, its slot (ota_0 / ota_1) and whether it is on trial
+ota check              the latest GitHub release against the running version
+ota update [force]     install the latest release (force: even the same version)
+ota url <http(s)://…>  install any image, e.g. a build served from this machine
+```
+
+From a development machine, `tools/ota_push.py --bridge http://<bridge host>:8765` (or `--usb`) serves
+`firmware/keryx/build/keryx.bin` over http and tells the board to fetch it — flashing without a cable; the
+machine's firewall must let the board in on port 8070.
+
+A new image boots on trial: if it restarts within 30 s, the bootloader goes back to the previous one
+(`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`); after 30 s the app keeps itself. The bootloader and the partition table
+are not updated over Wi-Fi — a board needs one USB flash with a rollback bootloader (from 2026-10-06) before
+updates over Wi-Fi are safe. The download runs in its own task with an 8 KB stack in internal RAM (a TLS handshake
+needs it), TLS buffers in PSRAM; audio stutters while flash is written, and the ring shows the progress.
+
 The partition table ([`firmware/keryx/partitions.csv`](../firmware/keryx/partitions.csv)) has NVS at 0x9000, two
-3 MB app slots for updates over Wi-Fi later and 1.9 MB of storage. Keep NVS where it is when changing it, or every
+3 MB app slots for updates over Wi-Fi and 1.9 MB of storage. Keep NVS where it is when changing it, or every
 board loses its pairing.
 
 ## Changing…

@@ -288,7 +288,19 @@ static void render(int64_t now)
     const float level = cb.speech_level() / 8000.0f;
     speech += ((level > 1 ? 1 : level) - speech) * (level > speech ? 0.6f : 0.15f);  // quick up, slow down
 
-    if (now < volume_until) {
+    const int update = cb.update_progress != NULL ? cb.update_progress() : -1;
+    if (update >= 0) {
+        // new firmware coming in: a white arc as long as the download so far, the rest faintly blue
+        const float done = update * RING_PIXELS / 100.0f;
+        for (int i = 0; i < RING_PIXELS; i++) {
+            const float part = done - i;
+            if (part > 0) {
+                add(i, 1, 1, 1, part >= 1 ? 1 : part);
+            } else {
+                add(i, 0, 0.3f, 1, 0.3f);
+            }
+        }
+    } else if (now < volume_until) {
         // an arc clockwise from 12 o'clock, as long as the volume; the last pixel lit in part
         const float lit = volume * RING_PIXELS / 100.0f;
         for (int i = 0; i < RING_PIXELS; i++) {
