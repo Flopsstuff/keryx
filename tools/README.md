@@ -77,3 +77,14 @@ it with `ota url`, through the bridge's console or over USB:
 The board restarts into the image on trial (rolled back if it restarts within 30 s); this machine's firewall must
 let it in on port 8070 (`--port`). Releases for everyone go through GitHub instead: see
 [docs/building.md](../docs/building.md#updates-over-wi-fi).
+
+## `watch_board.sh` — is the board there
+
+Once a second: the board's USB serial port on this Mac, ping over Wi-Fi, and whether the bridge sees it; changes
+are marked `<<<`. For hunting dropouts (a speaker's ground upsetting USB, Wi-Fi). Pings of 150–300 ms are the
+board's Wi-Fi power save while idle (DTIM 3), single digits while it talks.
+
+```bash
+tools/watch_board.sh                      # KERYX_BOARD_IP, KERYX_BRIDGE_HTTP and KERYX_BRIDGE_TOKEN from ../.env
+tools/watch_board.sh 192.168.1.20 http://192.168.1.10:8765
+```
