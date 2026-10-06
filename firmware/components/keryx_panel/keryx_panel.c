@@ -252,7 +252,8 @@ static void to_frame(void)
     }
 }
 
-// Yellow marks at 12, 3, 6 and 9 (red when muted: red and green alike, so that the two still differ at night), the minute hand one blue pixel, the hour hand two green ones;
+// Marks at 12, 3, 6 and 9: amber by day, yellow at night (at a night's 2 % the eye takes R 2 G 1 for red), red when
+// muted, the minute hand one blue pixel, the hour hand two green ones;
 // nothing until SNTP has set the clock.
 static void clock_face(bool muted)
 {
@@ -262,11 +263,12 @@ static void clock_face(bool muted)
     }
     struct tm tm;
     localtime_r(&now, &tm);
+    const bool night = is_night();
     for (int mark = 0; mark < RING_PIXELS; mark += RING_PIXELS / 4) {
         if (muted) {
             add(mark, 1, 0, 0, 0.7f);
         } else {
-            add(mark, 1, 1, 0, 0.7f);
+            add(mark, 1, night ? 1 : 0.5f, 0, 0.7f);  // R 12 G 6 at 10 %, R 2 G 2 at 2 %
         }
     }
     // The hands cover the marks; the minute hand, one pixel, goes over the hour hand. Their level: at 2 % (night) the
