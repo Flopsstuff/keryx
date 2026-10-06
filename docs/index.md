@@ -11,6 +11,8 @@ answer.
 - [setup.sh](../setup.sh) — all of it in one go on the bridge's machine: installs the bridge, flashes, pairs.
 - [Bridge](../bridge/README.md) — the service between the board and Hermes: install, pairing, commands, HTTP
   control, settings.
+- [Assembly](assembly.md) — the first Keryx built into an Edifier R1100 speaker: where everything goes, with
+  photos.
 
 ## Development
 
