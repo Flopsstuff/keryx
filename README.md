@@ -11,6 +11,12 @@ different hardware.
 
 ![The prototype: the reSpeaker Flex core board with the XIAO ESP32S3 underneath, its circular four-microphone array and the Wi-Fi antenna](docs/images/keryx-prototype.jpg)
 
+The first Keryx, built into an Edifier R1100 speaker ([how](docs/assembly.md)):
+
+| Front: the LED ring behind the grille shows a clock | Back: the knob next to the speaker's own controls |
+|---|---|
+| ![Keryx in an Edifier R1100, front: the LED ring's clock shows through the grille](docs/images/assembly/0.jpg) | ![Keryx in an Edifier R1100, back: the speaker's volume and bass knobs and the Keryx knob on an aluminium plate](docs/images/assembly/7.jpg) |
+
 ## What it does
 
 - **Wake word on the board.** "Hey Keryx" (or «Хей / Эй, Керикс») is recognized by a small streaming model trained
