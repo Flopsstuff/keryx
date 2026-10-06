@@ -33,6 +33,7 @@
 #include <string.h>
 
 #include "driver/gpio.h"
+#include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -57,6 +58,8 @@ static const char *TAG = "keryx";
 // XIAO ESP32S3 on the reSpeaker Flex
 #define PIN_I2C_SDA GPIO_NUM_5   // D4
 #define PIN_I2C_SCL GPIO_NUM_6   // D5
+#define PIN_PERIPH_SDA GPIO_NUM_1 // D0, our own I2C peripherals (STEMMA QT), on a bus of their own
+#define PIN_PERIPH_SCL GPIO_NUM_4 // D3
 #define PIN_I2S_BCLK GPIO_NUM_8  // D9
 #define PIN_I2S_LRCK GPIO_NUM_7  // D8
 #define PIN_I2S_DOUT GPIO_NUM_44 // D7, to XVF3800 I2S DATA0 (playback and AEC reference)
@@ -634,6 +637,117 @@ static void xvf_command(const char *args)
     keryx_console_printf("%s\n", line);
 }
 
+static i2c_master_bus_handle_t periph_bus;  // NULL if it could not be set up
+
+// Our peripherals do not share the XVF3800's bus: with the Adafruit rotary encoder (seesaw on a SAMD09) on it, the
+// XVF3800 holds SCL for up to half a second after its address and stops answering. The modules have 10 kΩ pull-ups.
+static void periph_bus_init(void)
+{
+    i2c_master_bus_config_t cfg = {
+        .i2c_port = I2C_NUM_1,
+        .sda_io_num = PIN_PERIPH_SDA,
+        .scl_io_num = PIN_PERIPH_SCL,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,  // keeps the lines high when nothing is plugged in
+    };
+    esp_err_t err = i2c_new_master_bus(&cfg, &periph_bus);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "no I2C bus for the peripherals: %s", esp_err_to_name(err));
+        periph_bus = NULL;
+    }
+}
+
+// Every address that acknowledges on one bus, with what we expect there, and every address where the probe failed
+// other than by a NACK (the bus was held, e.g. by a hung device).
+static int i2c_scan_bus(i2c_master_bus_handle_t bus, const char *bus_name)
+{
+    int found = 0;
+    for (uint8_t addr = 0x08; addr < 0x78; addr++) {
+        esp_err_t err = i2c_master_probe(bus, addr, 20);
+        if (err == ESP_ERR_NOT_FOUND) {
+            continue;
+        }
+        const char *name = addr == 0x18           ? "TLV320AIC3104 codec"
+                           : addr == XVF_I2C_ADDR ? "XVF3800"
+                           : addr == 0x36         ? "seesaw rotary encoder"
+                           : addr == 0x49         ? "seesaw ATtiny817"
+                           : addr == 0x60         ? "seesaw NeoDriver"
+                                                  : "unknown";
+        if (err != ESP_OK) {
+            keryx_console_printf("%s 0x%02x %s: %s\n", bus_name, addr, esp_err_to_name(err), name);
+            continue;
+        }
+        keryx_console_printf("%s 0x%02x %s\n", bus_name, addr, name);
+        found++;
+    }
+    return found;
+}
+
+// "i2c scan": both buses, the XVF3800's (D4/D5) and the peripherals' (D0/D3)
+static void i2c_scan_command(void)
+{
+    int found = i2c_scan_bus(xvf_i2c_bus(), "xvf");
+    if (periph_bus != NULL) {
+        found += i2c_scan_bus(periph_bus, "periph");
+    }
+    keryx_console_printf("ok %d devices\n", found);
+}
+
+// "i2c read <addr> <n> [bytes...]": write the bytes (a register address), wait 5 ms (seesaw needs the time), read n
+// bytes. "i2c write <addr> <bytes...>". Numbers in C notation (0x36). On the peripherals' bus; the XVF3800 has `xvf`.
+static void i2c_raw_command(const char *args)
+{
+    const bool read = strncmp(args, "read ", 5) == 0;
+    char *p = (char *)args + (read ? 5 : 6);
+    const long addr = strtol(p, &p, 0);
+    const long n = read ? strtol(p, &p, 0) : 0;
+    uint8_t out[16], in[32];
+    size_t count = 0;
+    for (char *end; count < sizeof(out); p = end) {
+        const long v = strtol(p, &end, 0);
+        if (end == p) {
+            break;
+        }
+        out[count++] = (uint8_t)v;
+    }
+    if (periph_bus == NULL) {
+        keryx_console_printf("error no peripheral bus\n");
+        return;
+    }
+    if (addr < 0x08 || addr > 0x77 || n < 0 || n > (long)sizeof(in) || (read ? n == 0 : count == 0)) {
+        keryx_console_printf("error usage: i2c read <addr> <n> [bytes...] | i2c write <addr> <bytes...>\n");
+        return;
+    }
+    i2c_device_config_t cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = (uint16_t)addr,
+        .scl_speed_hz = 100000,
+    };
+    i2c_master_dev_handle_t dev;
+    esp_err_t err = i2c_master_bus_add_device(periph_bus, &cfg, &dev);
+    if (err == ESP_OK) {
+        if (count > 0) {
+            err = i2c_master_transmit(dev, out, count, 50);
+        }
+        if (err == ESP_OK && read) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+            err = i2c_master_receive(dev, in, n, 50);
+        }
+        i2c_master_bus_rm_device(dev);
+    }
+    if (err != ESP_OK) {
+        keryx_console_printf("error %s\n", esp_err_to_name(err));
+        return;
+    }
+    char line[16 + 3 * sizeof(in)];
+    int len = snprintf(line, sizeof(line), "ok");
+    for (long i = 0; i < n; i++) {
+        len += snprintf(line + len, sizeof(line) - len, " %02x", in[i]);
+    }
+    keryx_console_printf("%s\n", line);
+}
+
 // Serial port commands beyond keryx_console's own.
 static bool console_command(const char *cmd)
 {
@@ -693,6 +807,14 @@ static bool console_command(const char *cmd)
     }
     if (strncmp(cmd, "xvf ", 4) == 0) {
         xvf_command(cmd + 4);
+        return true;
+    }
+    if (strcmp(cmd, "i2c scan") == 0) {
+        i2c_scan_command();
+        return true;
+    }
+    if (strncmp(cmd, "i2c read ", 9) == 0 || strncmp(cmd, "i2c write ", 10) == 0) {
+        i2c_raw_command(cmd + 4);
         return true;
     }
     const uint8_t *op = strcmp(cmd, "loop on") == 0    ? OP_L_REFERENCE
@@ -778,6 +900,7 @@ void app_main(void)
     } else {
         ESP_LOGW(TAG, "no I2C to the XVF3800, ASR output gain left at its default: %s", esp_err_to_name(err));
     }
+    periph_bus_init();
 
     // printed whenever a host opens the serial port: the start-up log is long gone by then
     snprintf(banner, sizeof(banner), "Keryx %s: last reset %s, wake word threshold %.2f, esp-dsp decimator check %d "

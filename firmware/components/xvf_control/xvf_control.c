@@ -40,6 +40,11 @@ esp_err_t xvf_control_init(gpio_num_t sda, gpio_num_t scl)
     return i2c_master_bus_add_device(bus, &dev_cfg, &xvf);
 }
 
+i2c_master_bus_handle_t xvf_i2c_bus(void)
+{
+    return bus;
+}
+
 esp_err_t xvf_read(uint8_t resid, uint8_t cmd, void *out, size_t len)
 {
     uint8_t request[3] = {resid, (uint8_t)(cmd | 0x80), (uint8_t)(len + 1)};

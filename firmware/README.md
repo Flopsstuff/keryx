@@ -88,6 +88,13 @@ predecessors.
   puts microphone 0 there, before AEC; `loop off` restores the beam. `xvf get|set <resid> <cmd> <int32|float|uint8>
   [count | values…]` reads or writes any XVF3800 parameter (e.g. `xvf get 33 3 int32`, AEC converged). While
   `loop on` is set, the ASR beam lets echo through: it is for measuring only.
+- Two I2C buses: the XVF3800's (D4/D5, also the codec) and one for our own STEMMA QT peripherals on D0 (SDA) / D3
+  (SCL), I2C_NUM_1. They are kept apart because with the Adafruit rotary encoder (seesaw on a SAMD09) on the
+  XVF3800's bus, the XVF3800 holds SCL for up to half a second after its address and stops answering — the ASR gain
+  is then never set. `i2c scan` lists what answers on both, by bus (`xvf 0x2c XVF3800`, `periph 0x36 seesaw rotary
+  encoder`; a held bus shows as `ESP_ERR_TIMEOUT`); `i2c read <addr> <n> [bytes…]` writes the bytes (a register),
+  waits 5 ms and reads `n` bytes, `i2c write <addr> <bytes…>`, both on the peripherals' bus (e.g. `i2c read 0x36 4
+  0x00 0x02`, a seesaw's product code and date).
 - Pairing, through the same serial port (`components/keryx_net`): `set ssid|password|bridge|token <value>`,
   `config`, `erase`, `wifi scan`, `status`, `net check <host> <port>` (can the board open a TCP connection there:
   is the bridge reachable from this network?); answers end with an `ok` or `error` line. The settings live in NVS and

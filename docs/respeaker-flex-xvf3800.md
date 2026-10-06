@@ -77,10 +77,10 @@ from the XIAO ESP32S3 pinout.
 
 | XIAO | ESP32-S3 | Used for |
 |---|---|---|
-| D0 | GPIO1 (ADC1, touch) | free, on the 4-pin header |
+| D0 | GPIO1 (ADC1, touch) | on the 4-pin header; SDA of our peripherals' I2C bus |
 | D1 | GPIO2 | not on the header; most likely the XVF3800 reset line |
 | D2 | GPIO3 (ADC1, touch, strapping pin) | free, on the 4-pin header |
-| D3 | GPIO4 (ADC1, touch) | free, on the 4-pin header |
+| D3 | GPIO4 (ADC1, touch) | on the 4-pin header; SCL of our peripherals' I2C bus |
 | D4 | GPIO5 | I2C SDA |
 | D5 | GPIO6 | I2C SCL |
 | D6 | GPIO43 | I2S DATA1, audio from the XVF3800 |
@@ -93,19 +93,21 @@ The 4-pin header next to the XIAO carries GND, D3, D2 and D0; it has no 3.3 V pi
 
 ### What is free for our own peripherals
 
-- **ESP32 D0, D2, D3** — any function through the GPIO matrix: buttons, an encoder (PCNT), WS2812 data (RMT).
-  All three are ADC1 channels (GPIO1–10 are), so a resistor ladder can put several buttons on one pin; ADC1 keeps
-  working while Wi-Fi is on. D2 (GPIO3) is a strapping pin: fine as a GPIO, but nothing should hold it at a fixed
-  level during boot.
+- **ESP32 D2** (and D0, D3, which `keryx` uses for its peripherals' I2C bus) — any function through the GPIO matrix:
+  buttons, an encoder (PCNT), WS2812 data (RMT). All three are ADC1 channels (GPIO1–10 are), so a resistor ladder can
+  put several buttons on one pin; ADC1 keeps working while Wi-Fi is on. D2 (GPIO3) is a strapping pin: fine as a GPIO,
+  but nothing should hold it at a fixed level during boot.
 - **XVF3800 X0D11 and X0D39** — outputs driven with `GPO_WRITE_VALUE`, e.g. plain LEDs through a ~1 kΩ
   resistor. SPI control is not used by the USB or I2C builds. X0D00 and X0D10 cannot be driven from the Seeed
   firmware.
 - **XVF3800 X1D13** — a button input; what the Seeed firmware does with it is unknown, and the Seeed
   `xvf_host.py` has no command to read it.
-- **The shared I2C bus** (header pins 5 and 6, the same lines as XIAO D4/D5) — room for I2C expanders, encoders
-  or LED drivers. Taken addresses: 0x2C (XVF3800); the TLV320AIC3104 codec is usually at 0x18 — confirm with a
-  bus scan. The XMOS pinout also lists this bus as the way the XVF3800 controls the DAC, so in the USB builds it
-  probably acts as a master here; adding a second master needs care.
+- **The shared I2C bus** (header pins 5 and 6, the same lines as XIAO D4/D5) — in principle room for I2C expanders,
+  encoders or LED drivers, but the XVF3800 is a fussy slave here: with an Adafruit seesaw rotary encoder (SAMD09) on
+  this bus it holds SCL after its address and stops answering, while a seesaw NeoDriver (ATtiny) was fine. The `keryx`
+  firmware therefore puts its peripherals on a second bus on D0/D3, powered from VDDIO (pin 11). Taken addresses: 0x2C
+  (XVF3800) and 0x18 (the TLV320AIC3104 codec). The XMOS pinout also lists this bus as the way the XVF3800 controls the
+  DAC, so in the USB builds it probably acts as a master here; adding a second master needs care.
 - **Power**: 5V_IN (pins 9, 10), VDDIO 3.3 V (pin 11), GND.
 
 ## Our unit

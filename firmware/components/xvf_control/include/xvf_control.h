@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "driver/gpio.h"
+#include "driver/i2c_master.h"
 #include "esp_err.h"
 
 #define XVF_I2C_ADDR 0x2C
@@ -17,6 +18,9 @@
 #define XVF_AEC_ASROUTGAIN 36
 
 esp_err_t xvf_control_init(gpio_num_t sda, gpio_num_t scl);
+
+// The board's I2C bus (also the codec and our own peripherals), valid after xvf_control_init.
+i2c_master_bus_handle_t xvf_i2c_bus(void);
 
 // Write {resid, cmd | 0x80, length + 1}, then read back a status byte followed by the payload.
 esp_err_t xvf_read(uint8_t resid, uint8_t cmd, void *out, size_t len);

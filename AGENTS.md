@@ -57,13 +57,13 @@ from the committed tree; the version is the last commit that touched `firmware/`
 Settings live in each project's `sdkconfig.defaults`; `sdkconfig` is generated — delete it after changing the
 defaults.
 
-The board's console is a serial port: `/dev/cu.usbmodemkeryx_*` on macOS, `/dev/ttyACM*` on Linux. For the first
-~4 s after boot it is the USB serial/JTAG console (USB 303A:1001), then TinyUSB takes the port (303A:8000, next to
-the sound card). Commands include `status`, `top`, `log`, `wake`, `volume [0-100|up|down]`, `sound
-wake|thinking|stop`, `loop on|mic|off`, `xvf get|set`, pairing with `set ssid|password|bridge|token`, `config`,
-`erase`, `wifi scan`, `net check <host> <port>`, and `bootloader` / `reboot`; every answer ends with an `ok` or
-`error` line. The full list is in `firmware/README.md#keryx`. Only one process can hold the port, so stop
-`converse.py` / `listen.py` / monitors before flashing.
+The board's console is a serial port: `/dev/cu.usbmodemkeryx_*` on macOS, `/dev/ttyACM*` on Linux. For the first ~4 s
+after boot it is the USB serial/JTAG console (USB 303A:1001), then TinyUSB takes the port (303A:8000, next to the sound
+card). Commands include `status`, `top`, `log`, `wake`, `volume [0-100|up|down]`, `sound wake|thinking|stop`, `loop
+on|mic|off`, `xvf get|set`, `i2c scan|read|write`, pairing with `set ssid|password|bridge|token`, `config`, `erase`,
+`wifi scan`, `net check <host> <port>`, and `bootloader` / `reboot`; every answer ends with an `ok` or `error` line. The
+full list is in `firmware/README.md#keryx`. Only one process can hold the port, so stop `converse.py` / `listen.py` /
+monitors before flashing.
 
 Bridge:
 
