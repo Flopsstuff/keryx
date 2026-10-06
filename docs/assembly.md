@@ -2,20 +2,26 @@
 
 The first Keryx lives in an Edifier R1100, an active bookshelf speaker: the reSpeaker Flex with the XIAO on top of
 the cabinet, the LED ring behind the front grille, the knob on the back panel. The speaker keeps its own amplifier
-and is what plays Keryx.
+and is what plays Keryx; its 17 V supply powers everything.
+
+![Wiring](images/assembly/wiring.svg)
 
 | Part | Where |
 |---|---|
 | reSpeaker Flex + XIAO ESP32S3 | on top of the cabinet, the microphone board under the metal ring on the top |
 | NeoDriver + ring of 24 WS2812 | the ring behind the front grille, around the tweeter |
 | Rotary encoder (Adafruit 4991) | on the back panel, on an aluminium plate where the speaker's input was |
-| Audio | the Flex's SPEAKER output (amplifier on 12 V) through a 140:140 Ω isolation transformer into the speaker's own input |
-| Power | 12 V for the Flex; a DC-DC to 5 V for the ring |
+| Audio | the Flex's SPEAKER output (its amplifier, on 12 V) through a 140:140 Ω isolation transformer into the R channel of the speaker's AUX input; the transformer is tiny, on the back of a board, so no photo shows it, only the wires to it |
+| Power | the R1100's own 17 V supply: step-down 1 to 12 V for the Flex (its PWR terminal), step-down 2 to 5 V for the ring (the NeoDriver's terminal block) |
 
-The encoder and the NeoDriver are on their own I2C bus (D0/D3), not the XVF3800's: see
-[respeaker-flex-xvf3800.md](respeaker-flex-xvf3800.md#what-is-free-for-our-own-peripherals). The transformer keeps
-the speaker's ground apart from the board's: wired straight into the input, the speaker's ground knocked the board
-off USB.
+The encoder and then the NeoDriver hang on a STEMMA QT bus of their own: 3.3 V from VDDIO (pin 11 of the 2×10
+header), GND, D3 as SCL and D0 as SDA from the 4-pin header next to the XIAO — not the XVF3800's bus, which the
+encoder hangs: see [respeaker-flex-xvf3800.md](respeaker-flex-xvf3800.md#what-is-free-for-our-own-peripherals). The
+ring takes its 5 V from step-down 2 through the NeoDriver's terminal block, not from the 3.3 V of the bus.
+
+All grounds are common: one supply. The transformer is there because SPEAKER is a bridged (BTL) output: neither of
+its wires is ground. Wired straight into AUX, the input's ground shorted one half of the bridge — no sound, clicks,
+and the board dropped off USB while the speaker was on.
 
 ## Photos
 

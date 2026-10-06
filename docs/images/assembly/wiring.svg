@@ -1,0 +1,179 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 860" font-family="Helvetica, Arial, sans-serif" font-size="13">
+  <title>Keryx in an Edifier R1100: wiring</title>
+  <rect width="1240" height="860" fill="#ffffff"/>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#555"/>
+    </marker>
+  </defs>
+  <style>
+    .box { fill: #f7f7f7; stroke: #333; stroke-width: 1.5; }
+    .outer { fill: #fbf7ef; stroke: #8a6d3b; stroke-width: 2; }
+    .title { font-weight: bold; font-size: 15px; }
+    .head { font-weight: bold; }
+    .small { font-size: 11px; fill: #444; }
+    .v17 { stroke: #e67e22; stroke-width: 3; fill: none; }
+    .v12 { stroke: #c0392b; stroke-width: 3; fill: none; }
+    .v5 { stroke: #8e44ad; stroke-width: 3; fill: none; }
+    .audio { stroke: #16a085; stroke-width: 2.5; fill: none; stroke-dasharray: 7 4; }
+    .sig { stroke: #555; stroke-width: 1.5; fill: none; }
+    .red { stroke: #e74c3c; stroke-width: 2.5; fill: none; }
+    .black { stroke: #111; stroke-width: 2.5; fill: none; }
+    .blue { stroke: #2471e0; stroke-width: 2.5; fill: none; }
+    .yellow { stroke: #e0b400; stroke-width: 2.5; fill: none; }
+    .pin { fill: #333; }
+  </style>
+
+  <text x="30" y="34" class="title">Keryx in an Edifier R1100 — power, audio and the peripherals' I2C bus</text>
+
+  <!-- Edifier R1100 -->
+  <rect x="30" y="60" width="270" height="640" rx="10" class="outer"/>
+  <text x="45" y="84" class="head">Edifier R1100</text>
+  <text x="45" y="100" class="small">active speaker, its own amplifier</text>
+
+  <rect x="55" y="120" width="220" height="64" rx="6" class="box"/>
+  <text x="70" y="146" class="head">Power supply</text>
+  <text x="70" y="166">17 V DC</text>
+
+  <rect x="55" y="250" width="220" height="70" rx="6" class="box"/>
+  <text x="70" y="276" class="head">Amplifier</text>
+  <text x="70" y="296" class="small">the speaker's volume and bass knobs</text>
+
+  <rect x="55" y="390" width="220" height="100" rx="6" class="box"/>
+  <text x="70" y="416" class="head">AUX input</text>
+  <text x="70" y="436" class="small">R channel used</text>
+  <circle cx="275" cy="450" r="4" class="pin"/><text x="252" y="454" class="small">R</text>
+  <circle cx="275" cy="472" r="4" class="pin"/><text x="236" y="476" class="small">GND</text>
+
+  <rect x="55" y="580" width="220" height="70" rx="6" class="box"/>
+  <text x="70" y="606" class="head">Woofer + tweeter</text>
+
+  <path d="M165,184 V250" class="v17" marker-end="url(#arrow)"/>
+  <path d="M165,390 V320" class="sig" marker-end="url(#arrow)"/>
+  <path d="M55,300 H42 V615 H55" class="sig" marker-end="url(#arrow)"/>
+
+  <!-- step-downs -->
+  <path d="M275,152 H330 V112 H380" class="v17"/>
+  <path d="M330,152 V202 H380" class="v17"/>
+  <text x="300" y="140" class="small" fill="#e67e22">17 V</text>
+
+  <rect x="380" y="82" width="170" height="60" rx="6" class="box"/>
+  <text x="395" y="106" class="head">Step-down 2</text>
+  <text x="395" y="126">17 V → 5 V</text>
+
+  <rect x="380" y="172" width="170" height="60" rx="6" class="box"/>
+  <text x="395" y="196" class="head">Step-down 1</text>
+  <text x="395" y="216">17 V → 12 V</text>
+
+  <!-- 12 V to the Flex -->
+  <path d="M550,202 H660 V300" class="v12" marker-end="url(#arrow)"/>
+  <text x="570" y="194" class="small" fill="#c0392b">12 V</text>
+  <text x="668" y="292" class="small">PWR 12 V terminal</text>
+
+  <!-- microphone board -->
+  <rect x="740" y="150" width="190" height="64" rx="6" class="box"/>
+  <text x="755" y="174" class="head">Microphone board</text>
+  <text x="755" y="194" class="small">4 mics, under the ring on top</text>
+  <path d="M835,214 V300" class="sig"/>
+  <text x="842" y="262" class="small">FPC</text>
+
+  <!-- reSpeaker Flex -->
+  <rect x="620" y="300" width="310" height="320" rx="10" class="box"/>
+  <text x="635" y="324" class="title">reSpeaker Flex</text>
+  <text x="635" y="342" class="small">XVF3800 · TLV320AIC3104 codec · 10 W amplifier (12 V)</text>
+
+  <rect x="740" y="495" width="150" height="105" rx="6" fill="#eef4fb" stroke="#2c5e9e" stroke-width="1.5"/>
+  <text x="755" y="519" class="head">XIAO ESP32S3</text>
+  <text x="755" y="539" class="small">Wi-Fi → the bridge</text>
+  <text x="755" y="555" class="small">I2S to the XVF3800</text>
+  <text x="755" y="571" class="small">I2C_NUM_1: D0 / D3</text>
+
+  <!-- header pins on the Flex's right edge -->
+  <circle cx="930" cy="368" r="4" class="pin"/>
+  <text x="920" y="372" class="small" text-anchor="end">VDDIO 3.3 V (2×10 header, pin 11)</text>
+  <text x="920" y="402" class="small" text-anchor="end">4-pin header next to the XIAO:</text>
+  <circle cx="930" cy="420" r="4" class="pin"/><text x="920" y="424" class="small" text-anchor="end">GND</text>
+  <circle cx="930" cy="444" r="4" class="pin"/><text x="920" y="448" class="small" text-anchor="end">D3 · SCL</text>
+  <circle cx="930" cy="468" r="4" class="pin"/><text x="920" y="472" class="small" text-anchor="end">D0 · SDA</text>
+
+  <!-- SPEAKER output -->
+  <circle cx="620" cy="560" r="4" class="pin"/>
+  <circle cx="620" cy="588" r="4" class="pin"/>
+  <text x="630" y="564" class="small">SPEAKER +</text>
+  <text x="630" y="592" class="small">SPEAKER −</text>
+  <text x="630" y="610" class="small">JST, bridged output</text>
+
+  <!-- USB, optional -->
+  <path d="M815,600 V650" class="sig" stroke-dasharray="4 3"/>
+  <rect x="715" y="650" width="220" height="50" rx="6" class="box" stroke-dasharray="5 3"/>
+  <text x="730" y="672" class="head">Mac (optional)</text>
+  <text x="730" y="690" class="small">USB-C on the XIAO: console, flashing</text>
+
+  <!-- transformer -->
+  <rect x="380" y="420" width="200" height="200" rx="6" class="box"/>
+  <text x="395" y="444" class="head">Isolation transformer</text>
+  <text x="395" y="462" class="small">140 Ω : 140 Ω, tiny, on the back</text>
+  <text x="395" y="476" class="small">of a board (not in the photos)</text>
+  <!-- coils -->
+  <path d="M440,490 q12,10 0,20 q12,10 0,20 q12,10 0,20 q12,10 0,20" stroke="#333" stroke-width="2" fill="none"/>
+  <path d="M500,490 q-12,10 0,20 q-12,10 0,20 q-12,10 0,20 q-12,10 0,20" stroke="#333" stroke-width="2" fill="none"/>
+  <path d="M465,486 V574 M475,486 V574" stroke="#333" stroke-width="2"/>
+  <path d="M500,490 H590 V560 H620" class="audio"/>
+  <path d="M500,570 H575 V588 H620" class="audio"/>
+  <path d="M440,490 H360 V450 H275" class="audio"/>
+  <path d="M440,570 H345 V472 H275" class="audio"/>
+  <text x="395" y="606" class="small">to AUX R</text>
+  <text x="497" y="606" class="small">from SPEAKER</text>
+
+  <!-- STEMMA QT from the Flex to the encoder -->
+  <path d="M930,368 H990 V330 H1010" class="red"/>
+  <path d="M930,420 H982 V345 H1010" class="black"/>
+  <path d="M930,444 H1000 V375 H1010" class="yellow"/>
+  <path d="M930,468 H993 V360 H1010" class="blue"/>
+
+  <rect x="1010" y="300" width="190" height="100" rx="6" class="box"/>
+  <text x="1025" y="324" class="head">Rotary encoder</text>
+  <text x="1025" y="342" class="small">Adafruit 4991 · seesaw SAMD09</text>
+  <text x="1025" y="358" class="small">I2C 0x36 · on the back panel</text>
+  <text x="1025" y="388" class="small">STEMMA QT in / out</text>
+
+  <!-- encoder to NeoDriver -->
+  <path d="M1090,400 V470" class="red"/>
+  <path d="M1100,400 V470" class="black"/>
+  <path d="M1110,400 V470" class="blue"/>
+  <path d="M1120,400 V470" class="yellow"/>
+  <text x="1128" y="440" class="small">STEMMA QT</text>
+
+  <rect x="1010" y="470" width="190" height="100" rx="6" class="box"/>
+  <text x="1025" y="494" class="head">NeoDriver</text>
+  <text x="1025" y="512" class="small">Adafruit · seesaw ATtiny · 0x60</text>
+  <text x="1025" y="528" class="small">logic from STEMMA QT (3.3 V)</text>
+  <text x="1025" y="556" class="small">5 V terminal block · out</text>
+
+  <!-- 5 V to the NeoDriver -->
+  <path d="M550,112 H1210 V530 H1200" class="v5" marker-end="url(#arrow)"/>
+  <text x="570" y="104" class="small" fill="#8e44ad">5 V (and GND) to the NeoDriver's terminal block, not through STEMMA QT</text>
+
+  <!-- ring -->
+  <path d="M1095,570 V625 M1105,570 V625 M1115,570 V625" stroke="#8e44ad" stroke-width="2"/>
+  <text x="1122" y="602" class="small">5 V · GND · DIN</text>
+  <circle cx="1105" cy="690" r="55" fill="none" stroke="#333" stroke-width="10"/>
+  <g fill="#3fa9f5">
+    <circle cx="1105" cy="635" r="4"/><circle cx="1160" cy="690" r="4"/><circle cx="1105" cy="745" r="4"/><circle cx="1050" cy="690" r="4"/>
+  </g>
+  <text x="1046" y="775" class="head">Ring, 24 × WS2812</text>
+  <text x="1052" y="792" class="small">behind the front grille</text>
+
+  <!-- legend -->
+  <g transform="translate(30,735)">
+    <text x="0" y="0" class="head">Legend</text>
+    <path d="M0,16 H30" class="v17"/><text x="38" y="20" class="small">17 V</text>
+    <path d="M80,16 H110" class="v12"/><text x="118" y="20" class="small">12 V</text>
+    <path d="M160,16 H190" class="v5"/><text x="198" y="20" class="small">5 V</text>
+    <path d="M0,38 H30" class="audio"/><text x="38" y="42" class="small">audio</text>
+    <path d="M80,38 H95" class="red"/><path d="M97,38 H112" class="black"/><path d="M114,38 H129" class="blue"/><path d="M131,38 H146" class="yellow"/>
+    <text x="154" y="42" class="small">STEMMA QT: 3.3 V · GND · SDA · SCL</text>
+    <text x="0" y="64" class="small">All grounds are common (one supply). The transformer is there because SPEAKER is a bridged output:</text>
+    <text x="0" y="80" class="small">neither of its wires is ground, and wired straight into AUX the input's ground shorted one half of it.</text>
+  </g>
+</svg>
