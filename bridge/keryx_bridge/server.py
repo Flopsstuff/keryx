@@ -28,7 +28,8 @@ bridge → board
 
 HTTP control on the same port, with the same token as `Authorization: Bearer …`: GET <path>/status;
 POST <path>/volume with {"value": 0..100} or {"delta": n}, which answers with the volume the board reports back;
-POST <path>/say with {"text": "…"}, which says it on the board and answers once it has been played;
+POST <path>/say with {"text": "…"} and optionally {"volume": 0..100}, which says it on the board (at that volume, the
+board's scale) and answers once it has been played;
 POST <path>/mute with {"value": true|false} and optionally {"for": seconds}, after which the bridge unmutes;
 POST <path>/console with {"line": "…"}, which runs it on the board's console and answers with what it printed.
 
@@ -70,8 +71,10 @@ BRIDGE_LINES = [
     f"board console: {REPO}/console.sh <command> runs a command on the board and prints its answer, e.g. "
     "`ring brightness` (the LED ring's day/night brightness: `ring brightness night 5 22:00`), `status`, `config`; "
     "only a safe set is allowed",
-    f'speak on your own: {REPO}/say.sh "text" (says it on the speaker, after any answer in progress; for reminders, '
-    "timers or anything the user asked to be told later)",
+    f'speak on your own: {REPO}/say.sh [--volume N] "text" (says it on the speaker, after any answer in progress; '
+    "for reminders, timers or anything the user asked to be told later; --volume 0..100 says it at that volume, on "
+    "the same scale as the volume above, without changing it: use a low one, e.g. 30, at night or when asked to be "
+    "quiet)",
 ] if INSTALLED else [])
 
 
@@ -433,7 +436,7 @@ class Bridge:
             self.unmute_task = asyncio.create_task(self.unmute_after(max(0.0, self.link.muted_until - time.time())))
 
     async def http_console(self, request):
-        """POST {"line": "…"}: runs it on the board's console; answers with what it printed and whether it ended ok."""
+        """POST {"line": "…"}: runs it on the board's console; answers with what it printed and whether it was ok."""
         if not self.authorized(request):
             return web.json_response({"error": "bad token"}, status=401)
         try:
@@ -462,19 +465,27 @@ class Bridge:
         except json.JSONDecodeError:
             body = {}
         text = str(body.get("text", "")).strip() if isinstance(body, dict) else ""
-        if not text or len(text) > 2000:
-            return web.json_response({"error": 'send {"text": "…"}, up to 2000 characters'}, status=400)
+        volume = body.get("volume") if isinstance(body, dict) else None
+        if not text or len(text) > 2000 or (volume is not None and (not isinstance(volume, int) or
+                                                                     isinstance(volume, bool) or
+                                                                     not 0 <= volume <= 100)):
+            return web.json_response({"error": 'send {"text": "…"}, up to 2000 characters, and optionally '
+                                      '{"volume": 0..100}'}, status=400)
         if self.link.ws is None:
             return web.json_response({"error": "no board connected"}, status=503)
         try:
-            seconds = await asyncio.wait_for(self.say(text), 180)
+            seconds = await asyncio.wait_for(self.say(text, volume), 180)
         except (RuntimeError, aiohttp.ClientError, asyncio.TimeoutError) as e:
             log(f"say: failed: {e!r}")
             return web.json_response({"error": f"could not say it: {e}"}, status=502)
         return web.json_response({"said_s": round(seconds, 1)})
 
-    async def say(self, text):
-        """Speaks text on the board outside the conversation's own answers; returns seconds of speech."""
+    async def say(self, text, volume=None):
+        """Speaks text on the board outside the conversation's own answers; returns seconds of speech.
+
+        `volume` (0..100, the board's scale) says it at that volume instead of the board's: below the board's volume
+        the bridge turns the speech down itself, so the board's volume and its ring stay as they are; above it the
+        board's volume goes up for the phrase and back afterwards."""
         async with self.say_lock:
             for _ in range(600):  # let an answer in progress finish first, up to 2 minutes
                 conv = None if self.assistant.idle() else self.assistant.conversation
@@ -484,28 +495,40 @@ class Bridge:
             conv = None if self.assistant.idle() else self.assistant.conversation
             if conv is not None:
                 conv.keryx_said(untagged(text))  # so that the microphone hearing it is not taken for the user
-            log(f"say: {text!r}", conv)
-            args = self.assistant.args
-            url = (f"wss://api.x.ai/v1/tts?language=auto&voice={args.voice}&codec=pcm&sample_rate={self.speaker.rate}")
-            audio = 0
-            self.speaker.first_sound = None
-            async with self.assistant.session.ws_connect(url, headers=self.assistant.xai) as tts:
-                await tts.send_str(json.dumps({"type": "text.delta", "delta": speakable(text)}))
-                await tts.send_str(json.dumps({"type": "text.done"}))
-                async for msg in tts:
-                    if msg.type != aiohttp.WSMsgType.TEXT:
-                        raise RuntimeError(f"TTS socket ended ({msg.type.name})")
-                    event = json.loads(msg.data)
-                    if event["type"] == "audio.delta":
-                        pcm = base64.b64decode(event["delta"])
-                        audio += len(pcm)
-                        await self.speaker.feed(pcm)
-                    elif event["type"] == "audio.done":
-                        break
-                    elif event["type"] == "error":
-                        raise RuntimeError(f"TTS: {event.get('message')}")
-            await self.speaker.end()
-            await self.speaker.drain()
+            gain, restore = 1.0, None
+            if volume is not None:
+                current = self.link.volume
+                if current is not None and volume <= current:
+                    gain = 0.0 if volume == 0 else 10 ** ((volume - current) * 0.5 / 20)  # 0.5 dB a step
+                elif await self.link.set_volume({"value": volume}) is not None:
+                    restore = current
+            log(f"say: {text!r}" + (f" at volume {volume}" if volume is not None else ""), conv)
+            try:
+                args = self.assistant.args
+                url = (f"wss://api.x.ai/v1/tts?language=auto&voice={args.voice}&codec=pcm"
+                       f"&sample_rate={self.speaker.rate}")
+                audio = 0
+                self.speaker.first_sound = None
+                async with self.assistant.session.ws_connect(url, headers=self.assistant.xai) as tts:
+                    await tts.send_str(json.dumps({"type": "text.delta", "delta": speakable(text)}))
+                    await tts.send_str(json.dumps({"type": "text.done"}))
+                    async for msg in tts:
+                        if msg.type != aiohttp.WSMsgType.TEXT:
+                            raise RuntimeError(f"TTS socket ended ({msg.type.name})")
+                        event = json.loads(msg.data)
+                        if event["type"] == "audio.delta":
+                            pcm = base64.b64decode(event["delta"])
+                            audio += len(pcm)
+                            await self.speaker.feed(apply_gain(pcm, gain))
+                        elif event["type"] == "audio.done":
+                            break
+                        elif event["type"] == "error":
+                            raise RuntimeError(f"TTS: {event.get('message')}")
+                await self.speaker.end()
+                await self.speaker.drain()
+            finally:
+                if restore is not None:
+                    await self.link.set_volume({"value": restore})
             # Hermes hears about it with the next request: a follow-up like "what did you say?" then has its answer
             self.assistant.said_on_own(text)
             log(f"say: done, {audio / 2 / self.speaker.rate:.1f} s", conv)

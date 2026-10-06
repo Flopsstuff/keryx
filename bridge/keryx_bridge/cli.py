@@ -5,7 +5,8 @@
   keryx-bridge pair [options]    give the board on USB the Wi-Fi, this bridge's address and its token
   keryx-bridge status            what a running bridge on this machine knows about the board
   keryx-bridge volume 60|+10|-10 set the board's volume through a running bridge
-  keryx-bridge say TEXT          say something on the board through a running bridge (TEXT or stdin)
+  keryx-bridge say [--volume N] TEXT   say something on the board through a running bridge (TEXT or stdin),
+                                 optionally at volume N (0..100) instead of the board's
   keryx-bridge mute [30m|2h]     stop the board listening (for a while: s, m or h; a bare number is minutes)
   keryx-bridge unmute            start it listening again
   keryx-bridge console LINE      run a line of the board's console through a running bridge (a safe set only)
@@ -235,10 +236,15 @@ def main():
         print(json.dumps(answer, ensure_ascii=False))
         sys.exit(0 if status == 200 else 1)
     elif command == "say":
-        text = " ".join(rest).strip() or sys.stdin.read().strip()
-        if not text:
-            sys.exit("nothing to say: keryx-bridge say TEXT, or the text on stdin")
-        status, answer = asyncio.run(control("POST", "say", {"text": text}, timeout=200))
+        body = {}
+        if rest[:1] in (["--volume"], ["-v"]):
+            if len(rest) < 2 or not rest[1].isdigit() or int(rest[1]) > 100:
+                sys.exit("keryx-bridge say --volume 0..100 TEXT")
+            body["volume"], rest = int(rest[1]), rest[2:]
+        body["text"] = " ".join(rest).strip() or sys.stdin.read().strip()
+        if not body["text"]:
+            sys.exit("nothing to say: keryx-bridge say [--volume N] TEXT, or the text on stdin")
+        status, answer = asyncio.run(control("POST", "say", body, timeout=200))
         print(json.dumps(answer, ensure_ascii=False))
         sys.exit(0 if status == 200 else 1)
     elif command == "console" and rest:

@@ -104,7 +104,7 @@ or a firewall shows up right there.
 | `keryx-bridge status` | what the running bridge knows: board connected, firmware, volume |
 | `keryx-bridge volume 60` / `+10` / `-10` | the board's volume, 0–100 (100 is 0 dB, 0.5 dB a step) |
 | `./set_volume.sh 60` / `+10` / `-10` | the same from the repository's root, printing just the number (no argument: the current volume); the bridge tells Hermes about it, so Hermes can change the volume when asked |
-| `keryx-bridge say TEXT`, `./say.sh "TEXT"` | say something on the board now (after an answer in progress); the bridge tells Hermes about `say.sh`, so Hermes can speak on its own: reminders, timers |
+| `keryx-bridge say [--volume N] TEXT`, `./say.sh [--volume N] "TEXT"` | say something on the board now (after an answer in progress), optionally at volume N (0–100, the board's scale) without changing the board's volume; the bridge tells Hermes about `say.sh`, so Hermes can speak on its own (reminders, timers) and quietly at night |
 | `keryx-bridge console LINE`, `./console.sh LINE` | run a command on the board's console over Wi-Fi and print its answer, e.g. `ring brightness night 5 22:00`, `status`, `config`; only a safe set (the rest needs the board on USB). Hermes knows about it |
 | `keryx-bridge mute [30m]`, `./mute.sh [30m]` / `./unmute.sh` | stop the board listening, optionally for a while (`90s`, `30m`, `2h`); only the microphone, it still speaks. The board keeps the state across restarts; Hermes knows about these too |
 
@@ -137,7 +137,9 @@ On the bridge's port, with `Authorization: Bearer <KERYX_BRIDGE_TOKEN>`:
 - `GET /keryx/status` — `{"connected": …, "id": …, "firmware": …, "volume": …, "conversation": …,
   "hermes_session": …, "hermes_idle_s": …}`
 - `POST /keryx/volume` with `{"value": 0..100}` or `{"delta": n}` — answers with the volume the board reports back
-- `POST /keryx/say` with `{"text": "…"}` — says it on the board and answers `{"said_s": …}` once it has been played
+- `POST /keryx/say` with `{"text": "…"}` and optionally `{"volume": 0..100}` — says it on the board and answers
+  `{"said_s": …}` once it has been played. Below the board's volume the bridge turns the speech down itself (the
+  board's volume and its ring stay as they are); above it the board's volume goes up for the phrase and back after
 - `POST /keryx/mute` with `{"value": true|false}` and optionally `{"for": seconds}` — mutes or unmutes the
   microphone; with `for` the bridge unmutes it when the time is up
 - `POST /keryx/console` with `{"line": "…"}` — runs it on the board's console and answers `{"output": "…", "ok": …}`;
