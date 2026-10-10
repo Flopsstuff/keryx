@@ -23,6 +23,8 @@
 // PP_AGCGAIN: the AGC's current gain on the processed beam (float, linear)
 #define XVF_PP_RESID 17
 #define XVF_PP_AGCGAIN 13
+// PP_NLATTENONOFF: non-linear echo attenuation on the processed beam (int32, 0 off, 1 on; off in Seeed's firmware)
+#define XVF_PP_NLATTENONOFF 27
 
 esp_err_t xvf_control_init(gpio_num_t sda, gpio_num_t scl);
 

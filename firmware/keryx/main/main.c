@@ -211,14 +211,30 @@ static float volume_db(int value)
 // applies the host's volume there). Ours is applied before the reference, so it stays 0 dB: set to the volume
 // (-23 dB at 54) it had the residual echo suppression expect that much less echo, and Keryx's own voice came through
 // the processed beam at +20.6 dB over silence instead of +3.1 dB. Written at start-up, as the XVF3800 keeps it across
-// a restart of the ESP32 alone, and retried until the chip answers, which after power-up takes a while. The task
-// then follows the AGC gain of the processed beam, for bringing L to R's level (stt_l_scale). A task of its own, as
-// the XVF3800 stretches the clock.
+// a restart of the ESP32 alone, and retried until the chip answers, which after power-up takes a while.
+// The same goes for PP_NLATTENONOFF, the last stage of the processed beam's echo suppression: it attenuates the
+// non-linear echo (distortion, the cabinet's vibration) the AEC cannot subtract. Seeed's firmware has it off;
+// measured in the speaker, it takes Keryx's voice in the processed beam from +6 dB over the room's noise to below it,
+// at volume 54 and at 80, with the user's voice over it as loud as before. The XVF3800 forgets both at power-off.
+// The task then follows the AGC gain of the processed beam, for bringing L to R's level (stt_l_scale). A task of its
+// own, as the XVF3800 stretches the clock.
+static esp_err_t xvf_set_int(uint8_t resid, uint8_t cmd, int32_t value)
+{
+    int32_t check;
+    esp_err_t err = xvf_write(resid, cmd, &value, sizeof(value));
+    if (err == ESP_OK) {
+        err = xvf_read(resid, cmd, &check, sizeof(check));
+    }
+    return err == ESP_OK && check != value ? ESP_ERR_INVALID_RESPONSE : err;
+}
+
 static void far_gain_task(void *arg)
 {
-    while (xvf_set_float(XVF_AEC_RESID, XVF_AEC_FAR_EXTGAIN, 0.0f) != ESP_OK) {
+    while (xvf_set_float(XVF_AEC_RESID, XVF_AEC_FAR_EXTGAIN, 0.0f) != ESP_OK ||
+           xvf_set_int(XVF_PP_RESID, XVF_PP_NLATTENONOFF, 1) != ESP_OK) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
+    ESP_LOGI(TAG, "XVF3800: AEC_FAR_EXTGAIN 0 dB, non-linear echo attenuation on");
     for (;;) {
         float agc;
         if (stt_channel != STT_R && xvf_read(XVF_PP_RESID, XVF_PP_AGCGAIN, &agc, sizeof(agc)) == ESP_OK &&
@@ -1038,9 +1054,11 @@ static void status_xvf(void)
     bool i2s = esp_timer_get_time() - last_i2s_read_us < 1000000;
     if (answers) {
         float far_gain = NAN;
+        int32_t nl_atten = -1;
         xvf_read(XVF_AEC_RESID, XVF_AEC_FAR_EXTGAIN, &far_gain, sizeof(far_gain));
-        keryx_console_printf("xvf=ok version=%u.%u.%u i2s=%s far_extgain=%.1fdB\n", version[0], version[1],
-                             version[2], i2s ? "running" : "no_clock", far_gain);
+        xvf_read(XVF_PP_RESID, XVF_PP_NLATTENONOFF, &nl_atten, sizeof(nl_atten));
+        keryx_console_printf("xvf=ok version=%u.%u.%u i2s=%s far_extgain=%.1fdB nl_atten=%ld\n", version[0],
+                             version[1], version[2], i2s ? "running" : "no_clock", far_gain, (long)nl_atten);
     } else {
         keryx_console_printf("xvf=no_answer i2s=%s\n", i2s ? "running" : "no_clock");
     }
