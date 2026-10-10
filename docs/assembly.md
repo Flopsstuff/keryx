@@ -14,6 +14,8 @@ and is what plays Keryx; its 17 V supply powers everything.
 | Audio | the Flex's SPEAKER output (its amplifier, on 12 V) through a 140:140 Ω isolation transformer into the R channel of the speaker's AUX input; the transformer is tiny, on the back of a board, so no photo shows it, only the wires to it |
 | Power | the R1100's own 17 V supply: step-down 1 to 12 V for the Flex (its PWR terminal), step-down 2 to 5 V for the ring (the NeoDriver's terminal block) |
 
+The printed parts — the hat over the microphones and the encoder's knob — are in [cad/](../cad/README.md).
+
 The encoder and then the NeoDriver hang on a STEMMA QT bus of their own: 3.3 V from VDDIO (pin 11 of the 2×10
 header), GND, D3 as SCL and D0 as SDA from the 4-pin header next to the XIAO — not the XVF3800's bus, which the
 encoder hangs: see [respeaker-flex-xvf3800.md](respeaker-flex-xvf3800.md#what-is-free-for-our-own-peripherals). The

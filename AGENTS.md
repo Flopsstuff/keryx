@@ -16,6 +16,7 @@ Hermes' OpenAI-compatible API, turns the reply into speech with xAI TTS and stre
 | `bridge/` | the voice bridge, an installable Python package (`keryx_bridge`, command `keryx-bridge`) run as a systemd user service |
 | `wakeword/` | data generation, training (PyTorch) and C export of the wake word model |
 | `tools/` | Mac bench tools: `converse.py` (the bridge pipeline over the board's USB sound card), `listen.py`, the mic-array `dashboard`, `xvf` control client |
+| `cad/` | printed parts (mic hat, encoder knob): Onshape FeatureScript features (`.fs`) and their STLs |
 | `setup.sh`, `say.sh`, `set_volume.sh`, `mute.sh`, `unmute.sh`, `console.sh` | one-step install on the bridge host; speak, set the volume, mute the microphone, run console commands through a running bridge |
 
 ## Documentation
@@ -32,6 +33,7 @@ everything below, and read the relevant one before changing a part:
 | [bridge/README.md](bridge/README.md) | installing and running the bridge, pairing (also from another computer), commands, settings, HTTP control |
 | [wakeword/README.md](wakeword/README.md) | wake word data, training and export to the firmware |
 | [tools/README.md](tools/README.md) | the Mac bench tools, `converse.py` |
+| [cad/README.md](cad/README.md) | the printed parts, their parameters, editing them in Onshape (FeatureScript MCP server) |
 | [docs/respeaker-flex-xvf3800.md](docs/respeaker-flex-xvf3800.md) | the board: pins, free GPIOs and I2C, XVF3800 parameters and output mux, I2S mode, switching its firmware |
 | [docs/speech-providers.md](docs/speech-providers.md) | STT/TTS providers compared and the latency measurements behind choosing xAI |
 

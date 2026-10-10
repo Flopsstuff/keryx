@@ -29,6 +29,12 @@
 *.npy         filter=lfs diff=lfs merge=lfs -text
 *.npz         filter=lfs diff=lfs merge=lfs -text
 
+# 3D models for printing and CAD exchange
+*.stl  filter=lfs diff=lfs merge=lfs -text
+*.3mf  filter=lfs diff=lfs merge=lfs -text
+*.step filter=lfs diff=lfs merge=lfs -text
+*.stp  filter=lfs diff=lfs merge=lfs -text
+
 # text files — with line ending normalization
 *.py   text eol=lf
 *.sh   text eol=lf

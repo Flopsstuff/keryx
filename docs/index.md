@@ -13,6 +13,8 @@ answer.
   control, settings.
 - [Assembly](assembly.md) — the first Keryx built into an Edifier R1100 speaker: where everything goes, with
   photos.
+- [CAD](../cad/README.md) — the printed parts (the mic hat, the encoder knob): parametric Onshape features and their
+  STLs.
 
 ## Development
 
