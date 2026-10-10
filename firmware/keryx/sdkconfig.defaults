@@ -64,3 +64,7 @@ CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# software AES: the hardware one goes through DMA, which reads internal RAM only, and for TLS buffers in PSRAM it
+# allocates a bounce buffer there; with the update task's stack taken, it found none ("esp-aes: Failed to allocate
+# memory") and `ota check` / `ota update` failed. TLS is only used for updates, so the speed does not matter.
+CONFIG_MBEDTLS_HARDWARE_AES=n

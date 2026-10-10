@@ -123,10 +123,12 @@ From a development machine, `tools/ota_push.py --bridge http://<bridge host>:876
 machine's firewall must let the board in on port 8070.
 
 A new image boots on trial: if it restarts within 30 s, the bootloader goes back to the previous one
-(`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`); after 30 s the app keeps itself. The bootloader and the partition table
-are not updated over Wi-Fi — a board needs one USB flash with a rollback bootloader (from 2026-10-06) before
-updates over Wi-Fi are safe. The download runs in its own task with an 8 KB stack in internal RAM (a TLS handshake
-needs it), TLS buffers in PSRAM; audio stutters while flash is written, and the ring shows the progress.
+(`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`); after 30 s the app keeps itself. The bootloader and the partition table are
+not updated over Wi-Fi — a board needs one USB flash with a rollback bootloader (from 2026-10-06) before updates over
+Wi-Fi are safe. The download runs in its own task with an 8 KB stack in internal RAM (a TLS handshake needs it), TLS
+buffers in PSRAM and software AES (`CONFIG_MBEDTLS_HARDWARE_AES=n`: the hardware AES goes through DMA, which reads
+internal RAM only, and asked for a bounce buffer there that the update's stack had left no room for — `esp-aes: Failed
+to allocate memory`); audio stutters while flash is written, and the ring shows the progress.
 
 The partition table ([`firmware/keryx/partitions.csv`](../firmware/keryx/partitions.csv)) has NVS at 0x9000, two
 3 MB app slots for updates over Wi-Fi and 1.9 MB of storage. Keep NVS where it is when changing it, or every
