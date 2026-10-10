@@ -250,12 +250,22 @@ static esp_err_t codec_set_volume(int v)
     return err;
 }
 
+// What the codec's headphone volume, line volume and line level registers held when last read, for `status`: only the
+// xvf task touches the codec
+static volatile uint8_t codec_seen[3];
+static volatile bool codec_seen_ok;
+
 // Whether the codec still has volume v (the XVF3800 rewrites it when it restarts)
 static bool codec_has_volume(int v)
 {
-    uint8_t line, level;
-    return codec_read(CODEC_DAC_L_TO_LOP, &line) == ESP_OK && codec_read(CODEC_LOP_LEVEL, &level) == ESP_OK &&
-           line == (CODEC_ROUTED | (v == 0 ? CODEC_VOLUME_MUTE : 100 - v + CODEC_LINE_HEADROOM)) &&
+    uint8_t hp, line, level;
+    codec_seen_ok = codec_read(CODEC_DAC_L_TO_HPLOUT, &hp) == ESP_OK &&
+                    codec_read(CODEC_DAC_L_TO_LOP, &line) == ESP_OK && codec_read(CODEC_LOP_LEVEL, &level) == ESP_OK;
+    if (!codec_seen_ok) {
+        return true;  // tried again in CODEC_CHECK_MS
+    }
+    codec_seen[0] = hp, codec_seen[1] = line, codec_seen[2] = level;
+    return line == (CODEC_ROUTED | (v == 0 ? CODEC_VOLUME_MUTE : 100 - v + CODEC_LINE_HEADROOM)) &&
            (level & CODEC_NOT_MUTED) == (v == 0 ? 0 : CODEC_NOT_MUTED);
 }
 
@@ -1142,10 +1152,9 @@ static void status_xvf(void)
         xvf_read(XVF_PP_RESID, XVF_PP_NLATTENONOFF, &nl_atten, sizeof(nl_atten));
         keryx_console_printf("xvf=ok version=%u.%u.%u i2s=%s far_extgain=%.1fdB nl_atten=%ld\n", version[0],
                              version[1], version[2], i2s ? "running" : "no_clock", far_gain, (long)nl_atten);
-        uint8_t hp = 0, line = 0, level = 0;
-        if (codec_read(CODEC_DAC_L_TO_HPLOUT, &hp) == ESP_OK && codec_read(CODEC_DAC_L_TO_LOP, &line) == ESP_OK &&
-            codec_read(CODEC_LOP_LEVEL, &level) == ESP_OK) {
-            keryx_console_printf("codec=ok headphones=0x%02x line=0x%02x line_level=0x%02x\n", hp, line, level);
+        if (codec_seen_ok) {
+            keryx_console_printf("codec=ok headphones=0x%02x line=0x%02x line_level=0x%02x\n", codec_seen[0],
+                                 codec_seen[1], codec_seen[2]);
         } else {
             keryx_console_printf("codec=no_answer\n");
         }

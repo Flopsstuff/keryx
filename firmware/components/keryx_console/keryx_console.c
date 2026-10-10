@@ -20,6 +20,8 @@
 static const char *TAG = "console";
 
 #define POLL_MS 20
+// in internal RAM, as commands write NVS; `status` overflowed 4 KB
+#define CONSOLE_STACK 6144
 #define LOG_LINE_MAX 256
 #define REMOTE_LINE_MAX 128
 #define REMOTE_OUTPUT_MAX 3072
@@ -239,7 +241,7 @@ esp_err_t keryx_console_start(const char *banner, keryx_console_command_fn comma
     if (write_lock == NULL || remote_queue == NULL || capture == NULL) {
         return ESP_ERR_NO_MEM;
     }
-    if (xTaskCreatePinnedToCore(console_task, "console", 4096, NULL, 2, &console_task_handle, 0) != pdPASS) {
+    if (xTaskCreatePinnedToCore(console_task, "console", CONSOLE_STACK, NULL, 2, &console_task_handle, 0) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
     esp_log_set_vprintf(log_vprintf);
