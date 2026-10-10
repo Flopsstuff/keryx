@@ -16,8 +16,8 @@
 // AEC_ASROUTGAIN: fixed gain on the ASR output (float, linear, 0..1000, 1.0 after reset)
 #define XVF_AEC_RESID 33
 #define XVF_AEC_ASROUTGAIN 36
-// AEC_FAR_EXTGAIN: gain in dB between the AEC reference and the loudspeaker (float, 0 by default); ours is 0, as
-// the volume is applied before the reference
+// AEC_FAR_EXTGAIN: gain in dB between the AEC reference and the loudspeaker (float, 0 by default): the volume, as
+// it is the codec's, after the reference
 #define XVF_AEC_FAR_EXTGAIN 5
 
 // PP_AGCGAIN: the AGC's current gain on the processed beam (float, linear)
@@ -36,6 +36,11 @@ esp_err_t xvf_read(uint8_t resid, uint8_t cmd, void *out, size_t len);
 
 // Write {resid, cmd, length, payload}. The chip does not acknowledge writes; read the value back to check.
 esp_err_t xvf_write(uint8_t resid, uint8_t cmd, const void *data, size_t len);
+
+// The TLV320AIC3104 codec on the same bus, which the XVF3800 sets up at boot (page 0 registers).
+#define CODEC_I2C_ADDR 0x18
+esp_err_t codec_read(uint8_t reg, uint8_t *value);
+esp_err_t codec_write(uint8_t reg, uint8_t value);
 
 // Writes a float parameter and reads it back; ESP_ERR_INVALID_RESPONSE if the chip reports something else.
 esp_err_t xvf_set_float(uint8_t resid, uint8_t cmd, float value);

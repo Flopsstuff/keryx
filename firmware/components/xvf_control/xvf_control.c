@@ -17,7 +17,7 @@ static const char *TAG = "xvf";
 #define RETRY_MS 500  // between attempts of xvf_set_float_when_ready
 
 static i2c_master_bus_handle_t bus;
-static i2c_master_dev_handle_t xvf;
+static i2c_master_dev_handle_t xvf, codec;
 
 esp_err_t xvf_control_init(gpio_num_t sda, gpio_num_t scl)
 {
@@ -37,7 +37,10 @@ esp_err_t xvf_control_init(gpio_num_t sda, gpio_num_t scl)
         .scl_speed_hz = 100000,
         .scl_wait_us = 20000, // the XVF3800 stretches the clock while it prepares a response
     };
-    return i2c_master_bus_add_device(bus, &dev_cfg, &xvf);
+    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(bus, &dev_cfg, &xvf), TAG, "XVF3800");
+    dev_cfg.device_address = CODEC_I2C_ADDR;
+    dev_cfg.scl_wait_us = 0;
+    return i2c_master_bus_add_device(bus, &dev_cfg, &codec);
 }
 
 i2c_master_bus_handle_t xvf_i2c_bus(void)
@@ -72,6 +75,18 @@ esp_err_t xvf_write(uint8_t resid, uint8_t cmd, const void *data, size_t len)
     ESP_RETURN_ON_FALSE(len <= MAX_PAYLOAD, ESP_ERR_INVALID_SIZE, TAG, "write too long");
     memcpy(request + 3, data, len);
     return i2c_master_transmit(xvf, request, 3 + len, 100);
+}
+
+esp_err_t codec_read(uint8_t reg, uint8_t *value)
+{
+    // one transaction with a repeated start: after a stop the codec reads from the next register
+    return i2c_master_transmit_receive(codec, &reg, 1, value, 1, 50);
+}
+
+esp_err_t codec_write(uint8_t reg, uint8_t value)
+{
+    const uint8_t request[2] = {reg, value};
+    return i2c_master_transmit(codec, request, sizeof(request), 50);
 }
 
 esp_err_t xvf_set_float(uint8_t resid, uint8_t cmd, float value)

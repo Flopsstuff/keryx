@@ -180,6 +180,8 @@ Measured by `firmware/xvf-bringup` on the XIAO ESP32S3 with `respeaker_flex_i2s_
 | Capture channels | L = `8,0` processed auto-select beam, R = `7,3` ASR auto-select beam |
 | `AUDIO_MGR_OP_UPSAMPLE` / `AUDIO_MGR_OP_PACKED` | 1,1 / 0,0 |
 | Playback | ESP32 → I2S DATA0 → codec → headphone jack works |
+| Codec set-up by the XVF3800 | jack: DACs at 0 dB, drivers +6 dB; line out (LEFT_LOP/M): both DACs at −12 dB, 0 dB |
+| Codec noise | the DAC hisses before its analog output volume: the hiss follows registers 82/85 and 86 |
 | Not answering over I2C | `BLD_MSG` (status 66), `AIC3104_HP_LEVEL` (status 97) |
 
 The Seeed firmware README calls the I2S images "I2S slave" and the Seeed I2S test sketch runs the ESP32 as master,

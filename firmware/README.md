@@ -94,7 +94,8 @@ predecessors.
   is then never set. `i2c scan` lists what answers on both, by bus (`xvf 0x2c XVF3800`, `periph 0x36 seesaw rotary
   encoder`; a held bus shows as `ESP_ERR_TIMEOUT`); `i2c read <addr> <n> [bytes…]` writes the bytes (a register),
   waits 5 ms and reads `n` bytes, `i2c write <addr> <bytes…>`, both on the peripherals' bus (e.g. `i2c read 0x36 4
-  0x00 0x02`, a seesaw's product code and date).
+  0x00 0x02`, a seesaw's product code and date), or with `xvf` on the XVF3800's (`i2c read xvf 0x18 1 82`, a codec
+  register: there the read is one transaction with a repeated start, as the codec otherwise reads the next register).
 - Pairing, through the same serial port (`components/keryx_net`): `set ssid|password|bridge|token <value>`,
   `config`, `erase`, `wifi scan`, `status`, `net check <host> <port>` (can the board open a TCP connection there:
   is the bridge reachable from this network?); answers end with an `ok` or `error` line. The settings live in NVS and
@@ -126,14 +127,21 @@ predecessors.
   the stream and the playback have ended. The report adds a line for the link: state,
   frames up, bytes down, playback underruns.
 - Volume: the board's own, 0–100 over everything it plays (the bridge's answers, its sounds, USB audio): 0 is silence,
-  then 0.5 dB a step up to 0 dB at 100, kept in NVS (saved 2 s after the last change). It is applied before the XVF3800
-  takes its AEC reference, so the reference always matches what plays and `AEC_FAR_EXTGAIN` (the gain between the
-  reference and the loudspeaker, which the XVF3800's USB variant uses for its own volume) must stay 0 dB: the firmware
-  writes 0 at start-up, as the chip keeps it across a restart of the ESP32. Set to the volume instead (−23 dB at 54), it
-  made the residual echo suppression expect that much less echo: Keryx's voice came through the processed beam at +20.6
-  dB over silence, against +3.1 dB at 0. `status` shows it (`far_extgain=0.0dB`). `volume`,
-  `volume <0-100>`, `volume up|down` (±10) on the console; `{"type":"volume",…}` from the bridge, see below. The
-  macOS volume of the Keryx sound card still applies to USB audio on top.
+  then 0.5 dB a step up to 0 dB at 100, kept in NVS (saved 2 s after the last change). It is the TLV320AIC3104 codec's
+  analog volume in front of its output drivers (page 0 registers 47/64 for the headphone jack, 82/85 for the line
+  output that feeds the amplifier on the SPEAKER connector; 0.5 dB a step down to −50 dB, soft-stepped by the codec):
+  the DAC's hiss comes before it and goes down with the voice, where a software gain left it as loud at any volume. The
+  line output mixes both DACs, so it sits 12 steps (6 dB) lower than the jack: 0 dB of mix at 100, where the XVF3800's
+  own set-up had −12 dB on each. Volume 0 also mutes the routes and the output drivers (registers 51/65/86, whose
+  levels stay as the XVF3800 set them: +6 dB on the jack, 0 dB on the line; raising the line's only raised the hiss).
+  The XVF3800 sets up the codec at boot, possibly after us, so the `xvf` task reads the registers back every 2 s and
+  sets them again if they changed. The volume comes after the XVF3800's AEC reference, so the chip is told it as
+  `AEC_FAR_EXTGAIN` (the gain between the reference and the loudspeaker, as in its USB variant). While the volume was a
+  software gain before the reference that was wrong: told −23 dB at 54, the residual echo suppression expected that
+  much less echo, and Keryx's voice came through the processed beam at +20.6 dB over silence instead of +3.1 dB.
+  `status` shows `far_extgain=…dB` and `codec=ok headphones=0x… line=0x… line_level=0x…` (the registers 47, 82 and
+  86). `volume`, `volume <0-100>`, `volume up|down` (±10) on the console; `{"type":"volume",…}` from the bridge, see
+  below. The macOS volume of the Keryx sound card still applies to USB audio on top, as a software gain.
 - Microphone mute: while muted nothing captured leaves the board — the USB microphone and the bridge get silence,
   a running stream stops at once, the wake word does not run (and starts afresh, with its 2.5 s warm-up, when
   unmuted); playback is not affected. A short falling / rising two-note sound marks the change. Kept in NVS, saved

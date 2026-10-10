@@ -100,8 +100,9 @@ from the ASR beam. UART0's pins carry I2S, so all logging is over USB. Two thing
 features, streaming model), the USB sound card and the bridge link (speech-to-text hears L, the processed beam with the
 XVF3800's residual echo suppression, R, or both crossfaded by whether the board is playing: `stt channel`; the wake word
 always R). A separate playback task mixes the USB speaker, the bridge's audio (24 or 16 kHz, brought to 48 kHz by its
-own FIR upsampler) and the board's sounds, and applies the volume (0–100, kept in NVS) before the point the AEC
-reference is taken from. Core 1 runs capture (wake word) and playback; core 0 runs USB (priority 20, above lwIP's 18 —
+own FIR upsampler) and the board's sounds; the volume (0–100, kept in NVS) is the codec's analog volume, after the
+DAC (whose hiss goes down with it) and after the point the AEC reference is taken from, so the XVF3800 is told it as
+`AEC_FAR_EXTGAIN`. Core 1 runs capture (wake word) and playback; core 0 runs USB (priority 20, above lwIP's 18 —
 otherwise Wi-Fi traffic starves the USB audio), Wi-Fi, lwIP (pinned to core 0), the WebSocket client, the console and
 the panel (`components/keryx_panel`: the knob and the LED ring, on an I2C bus of their own on D0/D3 — not the XVF3800's,
 which the encoder hangs).
