@@ -16,7 +16,8 @@
 // AEC_ASROUTGAIN: fixed gain on the ASR output (float, linear, 0..1000, 1.0 after reset)
 #define XVF_AEC_RESID 33
 #define XVF_AEC_ASROUTGAIN 36
-// AEC_FAR_EXTGAIN: gain in dB applied to the AEC reference outside the chip, i.e. our volume (float, 0 by default)
+// AEC_FAR_EXTGAIN: gain in dB between the AEC reference and the loudspeaker (float, 0 by default); ours is 0, as
+// the volume is applied before the reference
 #define XVF_AEC_FAR_EXTGAIN 5
 
 // PP_AGCGAIN: the AGC's current gain on the processed beam (float, linear)

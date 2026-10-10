@@ -207,24 +207,19 @@ static float volume_db(int value)
     return value == 0 ? -100.0f : value / 2.0f - 50.0f;
 }
 
-// Our volume is applied before the XVF3800 takes its AEC reference, so the chip has to be told it: XMOS' user guide
-// (4.1.2, AEC_FAR_EXTGAIN) has the host of the I2S variant set the external gain whenever it changes the volume. A
-// task of its own, as the XVF3800 stretches the clock: neither the knob nor the bridge link waits for I2C. It keeps
-// trying until the chip answers, which after power-up takes a while. It also follows the AGC gain of the processed
-// beam, for bringing L to R's level (stt_l_scale).
+// AEC_FAR_EXTGAIN is the gain between the AEC reference and the loudspeaker (XMOS' user guide 4.1.2: the USB variant
+// applies the host's volume there). Ours is applied before the reference, so it stays 0 dB: set to the volume
+// (-23 dB at 54) it had the residual echo suppression expect that much less echo, and Keryx's own voice came through
+// the processed beam at +20.6 dB over silence instead of +3.1 dB. Written at start-up, as the XVF3800 keeps it across
+// a restart of the ESP32 alone, and retried until the chip answers, which after power-up takes a while. The task
+// then follows the AGC gain of the processed beam, for bringing L to R's level (stt_l_scale). A task of its own, as
+// the XVF3800 stretches the clock.
 static void far_gain_task(void *arg)
 {
-    float sent = NAN;
+    while (xvf_set_float(XVF_AEC_RESID, XVF_AEC_FAR_EXTGAIN, 0.0f) != ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
     for (;;) {
-        const float want = volume_db(volume);
-        if (want != sent) {
-            if (xvf_set_float(XVF_AEC_RESID, XVF_AEC_FAR_EXTGAIN, want) != ESP_OK) {
-                vTaskDelay(pdMS_TO_TICKS(500));
-                continue;
-            }
-            sent = want;
-            ESP_LOGD(TAG, "AEC_FAR_EXTGAIN %.1f dB", want);
-        }
         float agc;
         if (stt_channel != STT_R && xvf_read(XVF_PP_RESID, XVF_PP_AGCGAIN, &agc, sizeof(agc)) == ESP_OK &&
             agc >= 0.1f && agc <= 1000.0f) {
@@ -242,9 +237,6 @@ static void volume_set(int value)
     volume_gain = value == 0 ? 0 : (int32_t)(powf(10.0f, volume_db(value) / 20.0f) * 32767.0f);
     settings_save_in(VOLUME_SAVE_MS);
     keryx_link_volume_changed(value);
-    if (far_gain_task_handle != NULL) {
-        xTaskNotifyGive(far_gain_task_handle);
-    }
 }
 
 static void settings_load(void)
