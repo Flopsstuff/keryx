@@ -16,6 +16,8 @@
 // AEC_ASROUTGAIN: fixed gain on the ASR output (float, linear, 0..1000, 1.0 after reset)
 #define XVF_AEC_RESID 33
 #define XVF_AEC_ASROUTGAIN 36
+// AEC_FAR_EXTGAIN: gain in dB applied to the AEC reference outside the chip, i.e. our volume (float, 0 by default)
+#define XVF_AEC_FAR_EXTGAIN 5
 
 esp_err_t xvf_control_init(gpio_num_t sda, gpio_num_t scl);
 

@@ -42,6 +42,7 @@
 #include "nvs_flash.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
 #include "keryx_console.h"
@@ -182,14 +183,46 @@ static void mute_set(bool on)
     keryx_link_mute_changed(on);
 }
 
+static TaskHandle_t far_gain_task_handle;
+
+// The volume in dB: 0.5 dB per step from -50 dB at 1 to 0 dB at 100; 0 is silence
+static float volume_db(int value)
+{
+    return value == 0 ? -100.0f : value / 2.0f - 50.0f;
+}
+
+// Our volume is applied before the XVF3800 takes its AEC reference, so the chip has to be told it: XMOS' user guide
+// (4.1.2, AEC_FAR_EXTGAIN) has the host of the I2S variant set the external gain whenever it changes the volume. A
+// task of its own, as the XVF3800 stretches the clock: neither the knob nor the bridge link waits for I2C. It keeps
+// trying until the chip answers, which after power-up takes a while.
+static void far_gain_task(void *arg)
+{
+    float sent = NAN;
+    for (;;) {
+        const float want = volume_db(volume);
+        if (want != sent) {
+            if (xvf_set_float(XVF_AEC_RESID, XVF_AEC_FAR_EXTGAIN, want) != ESP_OK) {
+                vTaskDelay(pdMS_TO_TICKS(500));
+                continue;
+            }
+            sent = want;
+            ESP_LOGD(TAG, "AEC_FAR_EXTGAIN %.1f dB", want);
+        }
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    }
+}
+
 // 0 is silence; above it, 0.5 dB per step from -50 dB at 0 to 0 dB at 100, as the host's volume control
 static void volume_set(int value)
 {
     value = value < 0 ? 0 : value > 100 ? 100 : value;
     volume = value;
-    volume_gain = value == 0 ? 0 : (int32_t)(powf(10.0f, (value / 2.0f - 50.0f) / 20.0f) * 32767.0f);
+    volume_gain = value == 0 ? 0 : (int32_t)(powf(10.0f, volume_db(value) / 20.0f) * 32767.0f);
     settings_save_in(VOLUME_SAVE_MS);
     keryx_link_volume_changed(value);
+    if (far_gain_task_handle != NULL) {
+        xTaskNotifyGive(far_gain_task_handle);
+    }
 }
 
 static void settings_load(void)
@@ -225,7 +258,7 @@ static void settings_load(void)
     esp_timer_create(&timer, &settings_save_timer);
     mic_muted = muted != 0;
     volume = stored > 100 ? VOLUME_DEFAULT : stored;
-    volume_gain = volume == 0 ? 0 : (int32_t)(powf(10.0f, (volume / 2.0f - 50.0f) / 20.0f) * 32767.0f);
+    volume_gain = volume == 0 ? 0 : (int32_t)(powf(10.0f, volume_db(volume) / 20.0f) * 32767.0f);
 }
 
 static void update_speaker_gain(void)
@@ -936,8 +969,10 @@ static void status_xvf(void)
     bool answers = xvf_read(48, 0, version, sizeof(version)) == ESP_OK;  // VERSION
     bool i2s = esp_timer_get_time() - last_i2s_read_us < 1000000;
     if (answers) {
-        keryx_console_printf("xvf=ok version=%u.%u.%u i2s=%s\n", version[0], version[1], version[2],
-                             i2s ? "running" : "no_clock");
+        float far_gain = NAN;
+        xvf_read(XVF_AEC_RESID, XVF_AEC_FAR_EXTGAIN, &far_gain, sizeof(far_gain));
+        keryx_console_printf("xvf=ok version=%u.%u.%u i2s=%s far_extgain=%.1fdB\n", version[0], version[1],
+                             version[2], i2s ? "running" : "no_clock", far_gain);
     } else {
         keryx_console_printf("xvf=no_answer i2s=%s\n", i2s ? "running" : "no_clock");
     }
@@ -1070,6 +1105,9 @@ void app_main(void)
     esp_err_t err = xvf_control_init(PIN_I2C_SDA, PIN_I2C_SCL);
     if (err == ESP_OK) {
         xvf_set_float_when_ready(XVF_AEC_RESID, XVF_AEC_ASROUTGAIN, ASR_GAIN, "XVF3800 ASR output gain");
+        // never writes flash: the stack can be in PSRAM
+        xTaskCreatePinnedToCoreWithCaps(far_gain_task, "xvf_gain", 3072, NULL, 2, &far_gain_task_handle, 0,
+                                        MALLOC_CAP_SPIRAM);
     } else {
         ESP_LOGW(TAG, "no I2C to the XVF3800, ASR output gain left at its default: %s", esp_err_to_name(err));
     }

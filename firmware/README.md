@@ -114,7 +114,10 @@ predecessors.
   the stream and the playback have ended. The report adds a line for the link: state,
   frames up, bytes down, playback underruns.
 - Volume: the board's own, 0–100 over everything it plays (the bridge's answers, its sounds, USB audio): 0 is
-  silence, then 0.5 dB a step up to 0 dB at 100, kept in NVS (saved 2 s after the last change). `volume`,
+  silence, then 0.5 dB a step up to 0 dB at 100, kept in NVS (saved 2 s after the last change). It is applied before
+  the XVF3800 takes its AEC reference, so the chip is told it as `AEC_FAR_EXTGAIN` (the external gain on the
+  reference, in dB; XMOS' user guide 4.1.2 has the I2S host set it with every volume change) by a task of its own,
+  which keeps trying after power-up until the XVF3800 answers; `status` shows it (`far_extgain=-19.0dB`). `volume`,
   `volume <0-100>`, `volume up|down` (±10) on the console; `{"type":"volume",…}` from the bridge, see below. The
   macOS volume of the Keryx sound card still applies to USB audio on top.
 - Microphone mute: while muted nothing captured leaves the board — the USB microphone and the bridge get silence,
