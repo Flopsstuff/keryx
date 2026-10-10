@@ -19,6 +19,10 @@
 // AEC_FAR_EXTGAIN: gain in dB applied to the AEC reference outside the chip, i.e. our volume (float, 0 by default)
 #define XVF_AEC_FAR_EXTGAIN 5
 
+// PP_AGCGAIN: the AGC's current gain on the processed beam (float, linear)
+#define XVF_PP_RESID 17
+#define XVF_PP_AGCGAIN 13
+
 esp_err_t xvf_control_init(gpio_num_t sda, gpio_num_t scl);
 
 // The board's I2C bus (also the codec and our own peripherals), valid after xvf_control_init.

@@ -108,6 +108,13 @@ predecessors.
   keeps 8 static RX buffers. About 33 KB of internal RAM stays free with Wi-Fi connected. The app builds for size
   except the wake word and its frontend (`-O2`); `partitions.csv` has two 3 MB app slots, for updates over Wi-Fi
   later, and 1.9 MB for a filesystem.
+- What speech-to-text hears (`stt channel [l|r|a]`, kept in NVS, also over Wi-Fi): `l` (default) the processed beam,
+  where the XVF3800's residual echo suppression takes Keryx's own voice out after about a second; `r` the ASR beam, as
+  the wake word hears it, with no post-processing — inside the speaker Keryx's echo stays in it at about the user's
+  level, and the beamformer turns to the speaker whenever the user pauses; `a` auto: L while the board plays and 1 s
+  after (any output block above −54 dBFS), R otherwise, crossfading over 30 ms. L passes the XVF3800's AGC, so it is
+  brought to R's level by ASR gain / AGC gain (`PP_AGCGAIN`, read every 0.5 s): the level does not jump between them.
+  The wake word always runs on R. Both beams are decimated to 16 kHz, L's decimator in PSRAM.
 - The voice bridge (`components/keryx_link`): a WebSocket client to the `bridge` URL, connected all the time
   (ping every 10 s, reconnects every 2 s). Protocol v1 below. Wi-Fi power save (modem sleep, DTIM 3: pings take
   ~260 ms) goes off at a wake or a `play_start` (the bridge may speak first, with no wake) and back on 5 s after

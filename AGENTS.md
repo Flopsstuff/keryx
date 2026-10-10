@@ -61,10 +61,10 @@ defaults.
 The board's console is a serial port: `/dev/cu.usbmodemkeryx_*` on macOS, `/dev/ttyACM*` on Linux. For the first ~4 s
 after boot it is the USB serial/JTAG console (USB 303A:1001), then TinyUSB takes the port (303A:8000, next to the sound
 card). Commands include `status`, `top`, `log`, `wake`, `volume [0-100|up|down]`, `sound wake|thinking|stop`, `loop
-on|mic|off`, `xvf get|set`, `i2c scan|read|write`, `ring …`, `ota …`, pairing with `set ssid|password|bridge|token`,
-`config`, `erase`, `wifi scan`, `net check <host> <port>`, and `bootloader` / `reboot`; every answer ends with an `ok`
-or `error` line. The full list is in `firmware/README.md#keryx`. Only one process can hold the port, so stop
-`converse.py` / `listen.py` / monitors before flashing.
+on|mic|off`, `xvf get|set`, `i2c scan|read|write`, `ring …`, `ota …`, `stt channel`, pairing with `set
+ssid|password|bridge|token`, `config`, `erase`, `wifi scan`, `net check <host> <port>`, and `bootloader` / `reboot`;
+every answer ends with an `ok` or `error` line. The full list is in `firmware/README.md#keryx`. Only one process can
+hold the port, so stop `converse.py` / `listen.py` / monitors before flashing.
 
 Bridge:
 
@@ -97,12 +97,14 @@ from the ASR beam. UART0's pins carry I2S, so all logging is over USB. Two thing
   in the vendored `usb_device_uac`, listed in its `KERYX.md`) — do not go back to FIFO-count feedback.
 
 **Firmware `keryx`.** One capture task reads I2S and feeds the wake word (48 → 16 kHz esp-dsp FIR, micro_speech
-features, streaming model), the USB sound card and the bridge link. A separate playback task mixes the USB speaker, the
-bridge's audio (24 or 16 kHz, brought to 48 kHz by its own FIR upsampler) and the board's sounds, and applies the volume
-(0–100, kept in NVS) before the point the AEC reference is taken from. Core 1 runs capture (wake word) and playback;
-core 0 runs USB (priority 20, above lwIP's 18 — otherwise Wi-Fi traffic starves the USB audio), Wi-Fi, lwIP (pinned to
-core 0), the WebSocket client, the console and the panel (`components/keryx_panel`: the knob and the LED ring, on an I2C
-bus of their own on D0/D3 — not the XVF3800's, which the encoder hangs).
+features, streaming model), the USB sound card and the bridge link (speech-to-text hears L, the processed beam with the
+XVF3800's residual echo suppression, R, or both crossfaded by whether the board is playing: `stt channel`; the wake word
+always R). A separate playback task mixes the USB speaker, the bridge's audio (24 or 16 kHz, brought to 48 kHz by its
+own FIR upsampler) and the board's sounds, and applies the volume (0–100, kept in NVS) before the point the AEC
+reference is taken from. Core 1 runs capture (wake word) and playback; core 0 runs USB (priority 20, above lwIP's 18 —
+otherwise Wi-Fi traffic starves the USB audio), Wi-Fi, lwIP (pinned to core 0), the WebSocket client, the console and
+the panel (`components/keryx_panel`: the knob and the LED ring, on an I2C bus of their own on D0/D3 — not the XVF3800's,
+which the encoder hangs).
 
 The features must stay bit-exact with training: `components/micro_frontend` (vendored from pymicro-features) and
 the FFT must not be swapped, and `components/keryx_wakeword/kww_weights.h` / `include/kww_config.h` are generated

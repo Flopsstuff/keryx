@@ -35,6 +35,7 @@
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_netif_sntp.h"
 #include "esp_system.h"
@@ -131,6 +132,20 @@ static esp_timer_handle_t settings_save_timer;  // volume and mute go to NVS a m
 // the microphone muted: nothing captured leaves the board (bridge, USB) and the wake word does not run; kept in NVS
 #define MUTE_SAVE_MS 200        // sooner than the volume: a mute that a power cut forgets is no mute
 static volatile bool mic_muted;
+// What goes to speech-to-text (the bridge): the processed beam (L: the XVF3800's residual echo suppression, noise
+// suppression and AGC), the ASR beam (R: what the wake word hears, no post-processing, so Keryx's own voice stays in
+// it), or auto: L while the board plays and STT_AUTO_HOLD_MS after, R otherwise, with a STT_FADE_MS crossfade. L is
+// brought to R's level (scaled by ASR gain / AGC gain), so the level does not jump between them. `stt channel`.
+typedef enum { STT_L, STT_R, STT_AUTO } stt_channel_t;
+#define STT_FADE_MS 30
+#define STT_AUTO_HOLD_MS 1000   // the echo's tail, after the last audible block
+#define STT_AGC_POLL_MS 500
+#define OUT_AUDIBLE 64          // an output block peaking above this (-54 dBFS) counts as the board playing
+static volatile stt_channel_t stt_channel = STT_L;
+static volatile float stt_l_scale = ASR_GAIN / 28.0f;  // until the AGC gain has been read
+static volatile int64_t last_audible_out_us;          // the playback task's last audible block
+static volatile float stt_l_weight;                   // 0: all R, 1: all L; for `status`
+
 static int ring_top;          // the ring's pixel at 12 o'clock, kept in NVS (`ring top`)
 static bool ring_reversed;    // its pixel numbers run anticlockwise (`ring reverse`)
 static int ring_day = 20, ring_night = 5;           // brightness in % (`ring brightness`)
@@ -154,6 +169,7 @@ static void settings_save(void *arg)
         nvs_set_u8(nvs, "muted", mic_muted ? 1 : 0);
         nvs_set_u8(nvs, "ring_top", (uint8_t)ring_top);
         nvs_set_u8(nvs, "ring_rev", ring_reversed ? 1 : 0);
+        nvs_set_u8(nvs, "stt_ch", (uint8_t)stt_channel);
         nvs_set_u8(nvs, "ring_day", (uint8_t)ring_day);
         nvs_set_u8(nvs, "ring_night", (uint8_t)ring_night);
         nvs_set_u16(nvs, "ring_day_at", (uint16_t)ring_day_from);
@@ -194,7 +210,8 @@ static float volume_db(int value)
 // Our volume is applied before the XVF3800 takes its AEC reference, so the chip has to be told it: XMOS' user guide
 // (4.1.2, AEC_FAR_EXTGAIN) has the host of the I2S variant set the external gain whenever it changes the volume. A
 // task of its own, as the XVF3800 stretches the clock: neither the knob nor the bridge link waits for I2C. It keeps
-// trying until the chip answers, which after power-up takes a while.
+// trying until the chip answers, which after power-up takes a while. It also follows the AGC gain of the processed
+// beam, for bringing L to R's level (stt_l_scale).
 static void far_gain_task(void *arg)
 {
     float sent = NAN;
@@ -208,7 +225,12 @@ static void far_gain_task(void *arg)
             sent = want;
             ESP_LOGD(TAG, "AEC_FAR_EXTGAIN %.1f dB", want);
         }
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        float agc;
+        if (stt_channel != STT_R && xvf_read(XVF_PP_RESID, XVF_PP_AGCGAIN, &agc, sizeof(agc)) == ESP_OK &&
+            agc >= 0.1f && agc <= 1000.0f) {
+            stt_l_scale = ASR_GAIN / agc;
+        }
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(STT_AGC_POLL_MS));
     }
 }
 
@@ -234,6 +256,10 @@ static void settings_load(void)
         nvs_get_u8(nvs, "muted", &muted);
         nvs_get_u8(nvs, "ring_top", &top);
         nvs_get_u8(nvs, "ring_rev", &reversed);
+        uint8_t channel;
+        if (nvs_get_u8(nvs, "stt_ch", &channel) == ESP_OK && channel <= STT_AUTO) {
+            stt_channel = (stt_channel_t)channel;
+        }
         uint8_t day, night;
         uint16_t day_from, night_from;
         if (nvs_get_u8(nvs, "ring_day", &day) == ESP_OK && day >= 1 && day <= 100) {
@@ -416,9 +442,33 @@ static void playback_task(void *arg)
                 out[2 * f + c] = v > INT32_MAX ? INT32_MAX : v < INT32_MIN ? INT32_MIN : (int32_t)v;
             }
         }
+        for (int i = 0; i < BLOCK_FRAMES; i++) {
+            const int32_t s = out[2 * i] >> 16;
+            if (s > OUT_AUDIBLE || s < -OUT_AUDIBLE) {
+                last_audible_out_us = esp_timer_get_time();  // for the auto STT channel
+                break;
+            }
+        }
         size_t written;
         i2s_channel_write(i2s_tx, out, sizeof(out), &written, portMAX_DELAY);
     }
+}
+
+// The 16 kHz audio for speech-to-text, from R (the ASR beam, as the wake word hears it) and L (the processed beam):
+// see stt_channel. The weight of L moves towards its target by one STT_FADE_MS ramp; L is scaled to R's level.
+static void stt_mix(const int16_t *r, const int16_t *l, size_t n, int16_t *out)
+{
+    static float weight;
+    const stt_channel_t mode = stt_channel;
+    const bool playing = esp_timer_get_time() - last_audible_out_us < STT_AUTO_HOLD_MS * 1000LL;
+    const float target = mode == STT_L ? 1.0f : mode == STT_R ? 0.0f : playing ? 1.0f : 0.0f;
+    const float step = 1.0f / (STT_FADE_MS * 16), scale = stt_l_scale;
+    for (size_t i = 0; i < n; i++) {
+        weight = weight < target ? fminf(target, weight + step) : fmaxf(target, weight - step);
+        const float v = (1.0f - weight) * r[i] + weight * scale * l[i];
+        out[i] = v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : (int16_t)lrintf(v);
+    }
+    stt_l_weight = weight;
 }
 
 // Reads I2S, hands the audio to the USB microphone and runs the wake word on the ASR channel.
@@ -428,12 +478,19 @@ static void capture_task(void *arg)
     static int16_t pcm[BLOCK_FRAMES * 2];
     static int16_t asr[BLOCK_FRAMES];
     static int16_t audio16[BLOCK_FRAMES / 3 + 2];
+    static int16_t proc[BLOCK_FRAMES];               // L, the processed beam, for speech-to-text
+    static int16_t proc16[BLOCK_FRAMES / 3 + 2];
+    static int16_t stt16[BLOCK_FRAMES / 3 + 2];
     static float frames[4][40];
     static kww_decimate_t decimate;
     static kww_frontend_t frontend;
     static kww_state_t model;
 
     kww_decimate_reset(&decimate);
+    // L's decimator in PSRAM (16-byte aligned, as esp-dsp wants): internal RAM is short and speed matters less here
+    kww_decimate_t *decimate_l = heap_caps_aligned_alloc(16, sizeof(kww_decimate_t), MALLOC_CAP_SPIRAM);
+    ESP_ERROR_CHECK(decimate_l == NULL ? ESP_ERR_NO_MEM : ESP_OK);
+    kww_decimate_reset(decimate_l);
     if (!kww_frontend_init(&frontend)) {
         ESP_LOGE(TAG, "micro_speech frontend failed to initialise");
         vTaskDelete(NULL);
@@ -476,6 +533,7 @@ static void capture_task(void *arg)
         } else if (was_muted) {
             // start listening afresh: no state left from before the mute
             kww_decimate_reset(&decimate);
+            kww_decimate_reset(decimate_l);
             FrontendReset(&frontend.state);
             kww_reset(&model);
             listening_since = esp_timer_get_time();
@@ -483,12 +541,15 @@ static void capture_task(void *arg)
         }
         for (int i = 0; i < BLOCK_FRAMES && !muted; i++) {
             asr[i] = pcm[2 * i + 1];
+            proc[i] = pcm[2 * i];
             int level = asr[i] < 0 ? -asr[i] : asr[i];
             peak_level = level > peak_level ? level : peak_level;
         }
         size_t n16 = muted ? 0 : kww_decimate(&decimate, asr, BLOCK_FRAMES, audio16);
         if (!muted) {
-            keryx_link_audio_up(audio16, n16);
+            kww_decimate(decimate_l, proc, BLOCK_FRAMES, proc16);  // the same count: both see whole blocks
+            stt_mix(audio16, proc16, n16, stt16);
+            keryx_link_audio_up(stt16, n16);
         }
         int nframes = muted ? 0 : kww_frontend_process(&frontend, audio16, n16, frames, 4);
         for (int f = 0; f < nframes; f++) {
@@ -914,6 +975,21 @@ static bool console_command(const char *cmd)
         xvf_command(cmd + 4);
         return true;
     }
+    if (strcmp(cmd, "stt channel") == 0 || strncmp(cmd, "stt channel ", 12) == 0) {
+        // what speech-to-text hears: l (processed), r (ASR beam) or a (auto: l while playing)
+        const char *arg = cmd + 11 + (cmd[11] == ' ');
+        if (*arg != '\0') {
+            if ((arg[0] != 'l' && arg[0] != 'r' && arg[0] != 'a') || arg[1] != '\0') {
+                keryx_console_printf("error usage: stt channel [l|r|a]\n");
+                return true;
+            }
+            stt_channel = arg[0] == 'l' ? STT_L : arg[0] == 'r' ? STT_R : STT_AUTO;
+            settings_save_in(VOLUME_SAVE_MS);
+        }
+        keryx_console_printf("ok stt channel %c, now %.0f %% L, L scaled by %.1f dB\n", "lra"[stt_channel],
+                             stt_l_weight * 100.0f, 20.0f * log10f(stt_l_scale));
+        return true;
+    }
     if (strcmp(cmd, "ring brightness") == 0 || strncmp(cmd, "ring brightness ", 16) == 0) {
         ring_brightness_command(cmd + 15 + (cmd[15] == ' '));
         return true;
@@ -987,7 +1063,7 @@ static void status_xvf(void)
 // `ota` is in: a new image that does not survive 30 s is rolled back by the bootloader.
 static const char *const REMOTE_COMMANDS[] = {
     "status", "config", "volume", "mute", "wake", "sound", "ring", "top", "log", "xvf get", "i2c scan", "i2c read",
-    "net check", "ota",
+    "net check", "ota", "stt channel",
 };
 
 static void bridge_console(int id, const char *line)
