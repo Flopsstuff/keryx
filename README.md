@@ -15,9 +15,9 @@ The first Keryx, built into an Edifier R1100 speaker ([how](docs/assembly.md)):
 
 <table>
   <tr>
-    <th width="33%">Front: the printed hat over the microphones, the LED ring behind the grille</th>
-    <th width="33%">Back: the knob next to the speaker's own controls</th>
-    <th width="33%">Demo, 25 s (<a href="docs/videos/keryx-demo.mp4">download</a>)</th>
+    <th width="33%">Front</th>
+    <th width="33%">Back</th>
+    <th width="33%">Demo (<a href="docs/videos/keryx-demo.mp4">download</a>)</th>
   </tr>
   <tr>
     <td><img src="docs/images/assembly/11.jpg" width="260"
