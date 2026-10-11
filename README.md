@@ -31,6 +31,8 @@ The first Keryx, built into an Edifier R1100 speaker ([how](docs/assembly.md)):
   </tr>
 </table>
 
+🔧 **[How it was built](docs/assembly.md)**: the wiring, the parts and photos of the assembly.
+
 ## What it does
 
 - **Wake word on the board.** "Hey Keryx" (or «Хей / Эй, Керикс») is recognized by a small streaming model trained
