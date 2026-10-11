@@ -13,13 +13,23 @@ different hardware.
 
 The first Keryx, built into an Edifier R1100 speaker ([how](docs/assembly.md)):
 
-| Front: the printed hat over the microphones, the LED ring behind the grille | Back: the knob next to the speaker's own controls |
-|---|---|
-| ![Keryx in an Edifier R1100, front: the Keryx hat over the microphones on top, the LED ring shining through the grille](docs/images/assembly/11.jpg) | ![Keryx in an Edifier R1100, back: the speaker's volume and bass knobs and the Keryx knob on an aluminium plate](docs/images/assembly/7.jpg) |
-
-Demo (25 s; [download](docs/videos/keryx-demo.mp4)):
-
-https://github.com/user-attachments/assets/df767fc8-8a61-4bc3-9485-95db17dcb93e
+<table>
+  <tr>
+    <th width="33%">Front: the printed hat over the microphones, the LED ring behind the grille</th>
+    <th width="33%">Back: the knob next to the speaker's own controls</th>
+    <th width="33%">Demo, 25 s (<a href="docs/videos/keryx-demo.mp4">download</a>)</th>
+  </tr>
+  <tr>
+    <td><img src="docs/images/assembly/11.jpg" width="260"
+      alt="Keryx in an Edifier R1100, front: the Keryx hat over the microphones on top, the LED ring shining through
+      the grille"></td>
+    <td><img src="docs/images/assembly/7.jpg" width="260"
+      alt="Keryx in an Edifier R1100, back: the speaker's volume and bass knobs and the Keryx knob on an aluminium
+      plate"></td>
+    <td><video src="https://github.com/user-attachments/assets/df767fc8-8a61-4bc3-9485-95db17dcb93e" width="260"
+      controls muted></video></td>
+  </tr>
+</table>
 
 ## What it does
 
