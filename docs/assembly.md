@@ -63,3 +63,15 @@ The back: the speaker's volume and bass, and the Keryx knob on an aluminium plat
 Done.
 
 ![Done](images/assembly/8.jpg)
+
+The printed parts ([cad/](../cad/README.md)) on the print bed: the mic hat, upside down, and the encoder knob.
+
+![The printed hat and knob](images/assembly/9.jpg)
+
+The hat going on: the ring on top of the cabinet over the microphone board, and the hat that covers it.
+
+![Fitting the hat](images/assembly/10.jpg)
+
+With the hat on: the ring shows through the grille.
+
+![With the hat](images/assembly/11.jpg)

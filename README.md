@@ -13,9 +13,9 @@ different hardware.
 
 The first Keryx, built into an Edifier R1100 speaker ([how](docs/assembly.md)):
 
-| Front: the LED ring behind the grille shows a clock | Back: the knob next to the speaker's own controls |
+| Front: the printed hat over the microphones, the LED ring behind the grille | Back: the knob next to the speaker's own controls |
 |---|---|
-| ![Keryx in an Edifier R1100, front: the LED ring's clock shows through the grille](docs/images/assembly/0.jpg) | ![Keryx in an Edifier R1100, back: the speaker's volume and bass knobs and the Keryx knob on an aluminium plate](docs/images/assembly/7.jpg) |
+| ![Keryx in an Edifier R1100, front: the Keryx hat over the microphones on top, the LED ring shining through the grille](docs/images/assembly/11.jpg) | ![Keryx in an Edifier R1100, back: the speaker's volume and bass knobs and the Keryx knob on an aluminium plate](docs/images/assembly/7.jpg) |
 
 ## What it does
 
