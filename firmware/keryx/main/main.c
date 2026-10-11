@@ -200,21 +200,21 @@ static void mute_set(bool on)
 
 static TaskHandle_t xvf_task_handle;
 
-// The volume in dB: 0.5 dB per step from -50 dB at 1 to 0 dB at 100; 0 is silence
-static float volume_db(int value)
-{
-    return value == 0 ? -100.0f : value / 2.0f - 50.0f;
-}
-
-// The volume is the codec's: the TLV320AIC3104's analog volume in front of each output driver (page 0, Table 10-51:
-// 0.5 dB a step down to -50 dB, soft-stepped by the codec). It comes after the DAC, whose hiss goes down with it (a
-// software gain before the DAC left the hiss as loud at any volume), and after the point the XVF3800 takes its AEC
-// reference, so the XVF3800 is told it as AEC_FAR_EXTGAIN. Volume v > 0 sets the headphone outputs to 100 - v steps
-// (0 dB at 100, where the XVF3800 has them) and the line output, which mixes both DACs for the amplifier on the
-// SPEAKER connector, 12 steps lower: 0 dB of mix for the same signal on both. The XVF3800 had it at -12 dB and our
-// volume before it. 0 mutes the routes and the output drivers. The XVF3800 sets up the codec at boot, possibly after
-// we do, so the registers are checked and set again when they change.
+// The volume is the codec's: the TLV320AIC3104's analog volume in front of each output driver (page 0, Table 10-51,
+// soft-stepped by the codec), after the DAC, whose hiss goes down with it (a software gain before the DAC left the hiss
+// as loud at any volume). The XVF3800 takes its AEC reference from I2S channel 0 (L) only and sends both channels to
+// the DACs, so the two channels carry different things: R is what is played, at full scale, to the DAC whose route
+// the volume sets (headphone jack and line output, which feeds the amplifier on the SPEAKER connector); L is the same
+// audio scaled by the codec's gain at that volume (ref_gain), only the AEC reference, its routes to the outputs off.
+// The echo path from the reference to the microphones then stays the same at any volume, as with a software volume:
+// put after the reference, the volume changed that path, and the AEC, which follows a louder echo, never followed a
+// quieter one (after turning the volume down, Keryx's own voice came out of the ASR beam at about -35 dBFS until
+// the XVF3800 restarted, at any lower volume, even with the speaker muted), and AEC_FAR_EXTGAIN did not change that.
+// Volume v > 0 sets setting 100 - v (0 dB at 100); 0 mutes the routes and the output drivers. The XVF3800 sets up the
+// codec at boot (both DACs into every output), possibly after we do, so the registers are checked and set again.
 #define CODEC_DAC_L_TO_HPLOUT 47
+#define CODEC_DAC_R_TO_HPLOUT 50
+#define CODEC_DAC_L_TO_HPROUT 61
 #define CODEC_DAC_R_TO_HPROUT 64
 #define CODEC_DAC_L_TO_LOP 82
 #define CODEC_DAC_R_TO_LOP 85
@@ -224,15 +224,30 @@ static float volume_db(int value)
 #define CODEC_ROUTED 0x80      // in a volume register: the DAC goes to that output
 #define CODEC_VOLUME_MUTE 118  // the analog volume's mute setting
 #define CODEC_NOT_MUTED 0x08   // in a level register
-#define CODEC_LINE_HEADROOM 12
 #define CODEC_CHECK_MS 2000
+
+// The analog gain of volume setting 0..117 in dB (Table 10-51: 0.5 dB a step, a little more past 36)
+static float codec_gain_db(int setting)
+{
+    static const float tail[] = {-35.7f, -36.1f, -36.7f, -37.1f, -37.7f, -38.2f, -38.7f, -39.2f, -39.7f, -40.2f,
+                                 -40.7f, -41.2f, -41.7f, -42.2f, -42.7f, -43.2f, -43.8f, -44.3f, -44.8f, -45.2f,
+                                 -45.8f, -46.2f, -46.7f, -47.4f, -47.9f, -48.2f, -48.7f, -49.3f, -50.0f};  // 71..99
+    return setting <= 36 ? -0.5f * setting : setting <= 70 ? -0.5f * setting - 0.1f : tail[setting - 71];
+}
+
+// The AEC reference's gain (L) in Q30: the codec's gain at the volume it has; set with it by the xvf task
+static volatile int32_t ref_gain = 1 << 30;
+
+static uint8_t codec_route(int v)
+{
+    return CODEC_ROUTED | (v == 0 ? CODEC_VOLUME_MUTE : 100 - v);
+}
 
 static esp_err_t codec_set_volume(int v)
 {
-    const uint8_t hp = CODEC_ROUTED | (v == 0 ? CODEC_VOLUME_MUTE : 100 - v);
-    const uint8_t line = CODEC_ROUTED | (v == 0 ? CODEC_VOLUME_MUTE : 100 - v + CODEC_LINE_HEADROOM);
-    const uint8_t volumes[][2] = {{CODEC_DAC_L_TO_HPLOUT, hp}, {CODEC_DAC_R_TO_HPROUT, hp},
-                                  {CODEC_DAC_L_TO_LOP, line}, {CODEC_DAC_R_TO_LOP, line}};
+    const uint8_t volumes[][2] = {{CODEC_DAC_R_TO_HPLOUT, codec_route(v)}, {CODEC_DAC_R_TO_HPROUT, codec_route(v)},
+                                  {CODEC_DAC_R_TO_LOP, codec_route(v)},    {CODEC_DAC_L_TO_HPLOUT, 0},
+                                  {CODEC_DAC_L_TO_HPROUT, 0},              {CODEC_DAC_L_TO_LOP, 0}};
     esp_err_t err = ESP_OK;
     for (size_t i = 0; i < sizeof(volumes) / sizeof(volumes[0]) && err == ESP_OK; i++) {
         err = codec_write(volumes[i][0], volumes[i][1]);
@@ -247,32 +262,34 @@ static esp_err_t codec_set_volume(int v)
             err = codec_write(levels[i], want);
         }
     }
+    if (err == ESP_OK) {
+        ref_gain = v == 0 ? 0 : (int32_t)(powf(10.0f, codec_gain_db(100 - v) / 20.0f) * (float)(1 << 30));
+    }
     return err;
 }
 
-// What the codec's headphone volume, line volume and line level registers held when last read, for `status`: only the
-// xvf task touches the codec
+// What the codec's line volume (R), line route of L and line level registers held when last read, for `status`: only
+// the xvf task touches the codec
 static volatile uint8_t codec_seen[3];
 static volatile bool codec_seen_ok;
 
 // Whether the codec still has volume v (the XVF3800 rewrites it when it restarts)
 static bool codec_has_volume(int v)
 {
-    uint8_t hp, line, level;
-    codec_seen_ok = codec_read(CODEC_DAC_L_TO_HPLOUT, &hp) == ESP_OK &&
-                    codec_read(CODEC_DAC_L_TO_LOP, &line) == ESP_OK && codec_read(CODEC_LOP_LEVEL, &level) == ESP_OK;
+    uint8_t line, left, level;
+    codec_seen_ok = codec_read(CODEC_DAC_R_TO_LOP, &line) == ESP_OK &&
+                    codec_read(CODEC_DAC_L_TO_LOP, &left) == ESP_OK && codec_read(CODEC_LOP_LEVEL, &level) == ESP_OK;
     if (!codec_seen_ok) {
         return true;  // tried again in CODEC_CHECK_MS
     }
-    codec_seen[0] = hp, codec_seen[1] = line, codec_seen[2] = level;
-    return line == (CODEC_ROUTED | (v == 0 ? CODEC_VOLUME_MUTE : 100 - v + CODEC_LINE_HEADROOM)) &&
+    codec_seen[0] = line, codec_seen[1] = left, codec_seen[2] = level;
+    return line == codec_route(v) && !(left & CODEC_ROUTED) &&
            (level & CODEC_NOT_MUTED) == (v == 0 ? 0 : CODEC_NOT_MUTED);
 }
 
-// AEC_FAR_EXTGAIN is the gain between the AEC reference and the loudspeaker (XMOS' user guide 4.1.2: the USB variant
-// applies the host's volume there), so it follows the volume. While the volume was a software gain before the
-// reference, setting it so was wrong: told -23 dB at 54, the residual echo suppression expected that much less echo
-// than there was, and Keryx's own voice came through the processed beam at +20.6 dB over silence instead of +3.1 dB.
+// AEC_FAR_EXTGAIN stays 0: the reference carries the volume (ref_gain). Set to the volume, -23 dB at 54, it told the
+// residual echo suppression to expect that much less echo than there was, and Keryx's own voice came through the
+// processed beam at +20.6 dB over silence instead of +3.1 dB. The XVF3800 keeps it over a restart of the ESP32 alone.
 // PP_NLATTENONOFF is the last stage of the processed beam's echo suppression: it attenuates the non-linear echo
 // (distortion, the cabinet's vibration) the AEC cannot subtract. Seeed's firmware has it off; measured in the speaker,
 // it takes Keryx's voice in the processed beam from +6 dB over the room's noise to below it, at volume 54 and at 80,
@@ -292,12 +309,12 @@ static esp_err_t xvf_set_int(uint8_t resid, uint8_t cmd, int32_t value)
 
 static void xvf_task(void *arg)
 {
-    while (xvf_set_int(XVF_PP_RESID, XVF_PP_NLATTENONOFF, 1) != ESP_OK) {
+    while (xvf_set_int(XVF_PP_RESID, XVF_PP_NLATTENONOFF, 1) != ESP_OK ||
+           xvf_set_float(XVF_AEC_RESID, XVF_AEC_FAR_EXTGAIN, 0.0f) != ESP_OK) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
     ESP_LOGI(TAG, "XVF3800: non-linear echo attenuation on");
     int on_codec = -1;
-    float far_gain = NAN;
     int64_t checked = 0, polled = 0;
     for (;;) {
         const int v = volume;
@@ -317,10 +334,6 @@ static void xvf_task(void *arg)
                 on_codec = -1;
                 continue;
             }
-        }
-        if (v > 0 && volume_db(v) != far_gain &&
-            xvf_set_float(XVF_AEC_RESID, XVF_AEC_FAR_EXTGAIN, volume_db(v)) == ESP_OK) {
-            far_gain = volume_db(v);
         }
         float agc;
         if (now - polled >= STT_AGC_POLL_MS * 1000LL) {
@@ -519,6 +532,7 @@ static void playback_task(void *arg)
         }
 
         int32_t gain = speaker_gain;
+        const int32_t reference = ref_gain;
         for (int f = 0; f < BLOCK_FRAMES; f++) {
             int32_t sound = bridge[f];  // the bridge's answer, mono, not under the host's volume
             if (shot_pos < shot_len) {
@@ -533,14 +547,15 @@ static void playback_task(void *arg)
                 sound += v;
                 thinking_pos = (thinking_pos + 1) % KERYX_SOUND_THINKING_LOOP;
             }
-            for (int c = 0; c < 2; c++) {
-                // Q15 gain; stays inside int32 even at full scale
-                int64_t v = (int64_t)in[2 * f + c] * gain * 2 + ((int64_t)sound << 16);
-                out[2 * f + c] = v > INT32_MAX ? INT32_MAX : v < INT32_MIN ? INT32_MIN : (int32_t)v;
-            }
+            // mono, as the line output plays one channel: (L + R) / 2 under the Q15 host gain, to 32 bits
+            int64_t v = ((int64_t)in[2 * f] + in[2 * f + 1]) * gain + ((int64_t)sound << 16);
+            const int32_t played = v > INT32_MAX ? INT32_MAX : v < INT32_MIN ? INT32_MIN : (int32_t)v;
+            out[2 * f + 1] = played;                                   // R: to the DAC the volume is on
+            out[2 * f] = (int32_t)(((int64_t)played * reference) >> 30);  // L: the AEC reference, at the volume
+
         }
         for (int i = 0; i < BLOCK_FRAMES; i++) {
-            const int32_t s = out[2 * i] >> 16;
+            const int32_t s = out[2 * i + 1] >> 16;
             if (s > OUT_AUDIBLE || s < -OUT_AUDIBLE) {
                 last_audible_out_us = esp_timer_get_time();  // for the auto STT channel
                 break;
@@ -790,13 +805,15 @@ const char *uac_serial_number(void)
 
 // "xvf get <resid> <cmd> <int32|float|uint8> [count]" / "xvf set <resid> <cmd> <type> <value>...": any XVF3800
 // parameter over I2C, as tools/xvf does over USB (ids in docs/respeaker-flex-xvf3800.md and the XMOS user guide).
+// `set` reads the value back; "xvf write ..." does not, for write-only commands such as the AEC filter's special
+// commands, where a read in the middle of the sequence wedges the XVF3800's control until it is powered off.
 static void xvf_command(const char *args)
 {
-    char op[4], type[8];
+    char op[6], type[8];
     int resid, id, consumed = 0;
-    if (sscanf(args, "%3s %d %d %7s %n", op, &resid, &id, type, &consumed) != 4 ||
+    if (sscanf(args, "%5s %d %d %7s %n", op, &resid, &id, type, &consumed) != 4 ||
         (strcmp(type, "int32") != 0 && strcmp(type, "float") != 0 && strcmp(type, "uint8") != 0)) {
-        keryx_console_printf("error usage: xvf get|set <resid> <cmd> <int32|float|uint8> [count | values...]\n");
+        keryx_console_printf("error usage: xvf get|set|write <resid> <cmd> <int32|float|uint8> [count | values...]\n");
         return;
     }
     const size_t size = type[0] == 'u' ? 1 : 4;
@@ -813,7 +830,7 @@ static void xvf_command(const char *args)
             keryx_console_printf("error read: %s\n", esp_err_to_name(err));
             return;
         }
-    } else if (strcmp(op, "set") == 0) {
+    } else if (strcmp(op, "set") == 0 || strcmp(op, "write") == 0) {
         const char *p = args + consumed;
         char *end;
         while (*p && count * size < sizeof(buf)) {
@@ -836,7 +853,7 @@ static void xvf_command(const char *args)
             p = end;
         }
         esp_err_t err = count ? xvf_write(resid, id, buf, count * size) : ESP_ERR_INVALID_ARG;
-        if (err == ESP_OK) {
+        if (err == ESP_OK && op[0] == 's') {
             err = xvf_read(resid, id, buf, count * size);  // what the chip took
         }
         if (err != ESP_OK) {
@@ -844,10 +861,10 @@ static void xvf_command(const char *args)
             return;
         }
     } else {
-        keryx_console_printf("error usage: xvf get|set ...\n");
+        keryx_console_printf("error usage: xvf get|set|write ...\n");
         return;
     }
-    char line[200];
+    char line[248];  // 15 floats, the AEC filter's chunk, within the console's 256
     int n = snprintf(line, sizeof(line), "ok %d %d =", resid, id);
     for (size_t i = 0; i < count && n < (int)sizeof(line) - 16; i++) {
         if (type[0] == 'f') {
@@ -1153,8 +1170,9 @@ static void status_xvf(void)
         keryx_console_printf("xvf=ok version=%u.%u.%u i2s=%s far_extgain=%.1fdB nl_atten=%ld\n", version[0],
                              version[1], version[2], i2s ? "running" : "no_clock", far_gain, (long)nl_atten);
         if (codec_seen_ok) {
-            keryx_console_printf("codec=ok headphones=0x%02x line=0x%02x line_level=0x%02x\n", codec_seen[0],
-                                 codec_seen[1], codec_seen[2]);
+            keryx_console_printf("codec=ok line=0x%02x line_from_l=0x%02x line_level=0x%02x reference=%.1fdB\n",
+                                 codec_seen[0], codec_seen[1], codec_seen[2],
+                                 ref_gain > 0 ? 20.0f * log10f(ref_gain / (float)(1 << 30)) : -INFINITY);
         } else {
             keryx_console_printf("codec=no_answer\n");
         }

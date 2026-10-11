@@ -63,7 +63,7 @@ defaults.
 The board's console is a serial port: `/dev/cu.usbmodemkeryx_*` on macOS, `/dev/ttyACM*` on Linux. For the first ~4 s
 after boot it is the USB serial/JTAG console (USB 303A:1001), then TinyUSB takes the port (303A:8000, next to the sound
 card). Commands include `status`, `top`, `log`, `wake`, `volume [0-100|up|down]`, `sound wake|thinking|stop`, `loop
-on|mic|off`, `xvf get|set`, `i2c scan|read|write`, `ring …`, `ota …`, `stt channel`, pairing with `set
+on|mic|off`, `xvf get|set|write`, `i2c scan|read|write`, `ring …`, `ota …`, `stt channel`, pairing with `set
 ssid|password|bridge|token`, `config`, `erase`, `wifi scan`, `net check <host> <port>`, and `bootloader` / `reboot`;
 every answer ends with an `ok` or `error` line. The full list is in `firmware/README.md#keryx`. Only one process can
 hold the port, so stop `converse.py` / `listen.py` / monitors before flashing.
@@ -103,8 +103,12 @@ features, streaming model), the USB sound card and the bridge link (speech-to-te
 XVF3800's residual echo suppression, R, or both crossfaded by whether the board is playing: `stt channel`; the wake word
 always R). A separate playback task mixes the USB speaker, the bridge's audio (24 or 16 kHz, brought to 48 kHz by its
 own FIR upsampler) and the board's sounds; the volume (0–100, kept in NVS) is the codec's analog volume, after the
-DAC (whose hiss goes down with it) and after the point the AEC reference is taken from, so the XVF3800 is told it as
-`AEC_FAR_EXTGAIN`. Core 1 runs capture (wake word) and playback; core 0 runs USB (priority 20, above lwIP's 18 —
+DAC (whose hiss goes down with it). The XVF3800 takes its AEC reference from I2S channel L only and sends both channels
+to the DACs, so R carries the mix at full scale to the outputs the volume is on, and L the same mix scaled by the
+codec's gain, as the reference only (its routes to the outputs off): the echo path then does not change with the
+volume. Do not put the volume after the reference again: the AEC follows a louder echo but never a quieter one, so
+turning the volume down left Keryx's voice in the ASR beam until the XVF3800 restarted; `AEC_FAR_EXTGAIN` stays 0.
+Core 1 runs capture (wake word) and playback; core 0 runs USB (priority 20, above lwIP's 18 —
 otherwise Wi-Fi traffic starves the USB audio), Wi-Fi, lwIP (pinned to core 0), the WebSocket client, the console and
 the panel (`components/keryx_panel`: the knob and the LED ring, on an I2C bus of their own on D0/D3 — not the XVF3800's,
 which the encoder hangs).

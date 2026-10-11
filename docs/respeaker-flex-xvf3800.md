@@ -182,6 +182,8 @@ Measured by `firmware/xvf-bringup` on the XIAO ESP32S3 with `respeaker_flex_i2s_
 | Playback | ESP32 → I2S DATA0 → codec → headphone jack works |
 | Codec set-up by the XVF3800 | jack: DACs at 0 dB, drivers +6 dB; line out (LEFT_LOP/M): both DACs at −12 dB, 0 dB |
 | Codec noise | the DAC hisses before its analog output volume: the hiss follows registers 82/85 and 86 |
+| AEC reference | I2S channel 0 (L) only; both channels go to the DACs |
+| `REBOOT` (48, 7) | restarts the XVF3800 in about 0.5 s, I2S included; parameters back to their defaults |
 | Not answering over I2C | `BLD_MSG` (status 66), `AIC3104_HP_LEVEL` (status 97) |
 
 The Seeed firmware README calls the I2S images "I2S slave" and the Seeed I2S test sketch runs the ESP32 as master,
@@ -195,6 +197,39 @@ boot, that line still floats; a 10–100 kΩ pull-down on it would cover that wi
 
 The I2C control protocol: write `{resid, cmd | 0x80, length + 1}`, then read `length + 1` bytes, the first being
 a status (0 = OK, 64 = retry). Parameter ids are the same as over USB (see `xvf_host.py`).
+
+### The AEC and the volume
+
+Measured in the R1100 (its knob at half), with Keryx counting and nobody talking:
+
+- The reference is I2S channel 0 only: noise in R alone comes out of the speaker and the microphones hear it, while
+  the reference stays digital zero.
+- The AEC follows a louder echo, not a quieter one. With a gain between the reference and the speaker turned down
+  (the codec's volume, or the microphones' gain), the old echo stays subtracted: Keryx's voice stays in the ASR beam
+  at about −35 dBFS, at any lower volume and even with the speaker muted, until the XVF3800 restarts or the gain
+  comes back up. `AEC_FAR_EXTGAIN` does not change that, nor does path change detection (`AEC_PCD_COUPLINGI`, off
+  by default), which only suppresses the processed beam harder, the user's voice included. `keryx` therefore keeps
+  that gain constant: the volume is applied to the reference as well.
+- Gain structure: at volume 100 the microphones after gain are 11–15 dB below the reference (XMOS asks for at least
+  6 dB). The AEC filter's frequency-domain peak is −8.4 dB at volume 66, so above 0 dB near full volume, where XMOS
+  says to lower `AUDIO_MGR_MIC_GAIN`; at volume 90 the AEC cancels clearly less.
+
+### Reading the AEC filter
+
+The AEC filter (3072 taps per microphone, `SPECIAL_CMD_AEC_FILTER_LENGTH` 33/93) can be read and written over I2C with
+the special commands, in the order of XMOS' `host_xvf_control` (`src/special_commands/filters.cpp`):
+
+1. `SHF_BYPASS` (33/70) = 1, so that the filter does not adapt meanwhile;
+2. `SPECIAL_CMD_AEC_FAR_MIC_INDEX` (33/90) = far, mic — write-only: it must not be read back (`xvf write`, not
+   `xvf set`). Read back, or sent without the bypass, it left the XVF3800's control dead until a power cycle;
+3. for each chunk: `SPECIAL_CMD_AEC_FILTER_COEFF_START_OFFSET` (33/91) = offset, then read or write
+   `SPECIAL_CMD_AEC_FILTER_COEFFS` (33/92), 15 floats — always 15, the last chunk padded;
+4. `SHF_BYPASS` = 0.
+
+Reads of one microphone after another work; a read after a write fails (status error) until
+`AEC_FILTER_CMD_ABORT` (33/94) is written. Over the console a microphone takes about 22 s. Rescaling the filter
+to a new volume gave the same filter as a fresh convergence at that volume, yet the echo stayed: the AEC keeps state
+these commands do not reach.
 
 ### Switching firmware
 

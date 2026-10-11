@@ -15,6 +15,8 @@ static const char *TAG = "xvf";
 #define STATUS_RETRY 64
 #define MAX_PAYLOAD 64
 #define RETRY_MS 500  // between attempts of xvf_set_float_when_ready
+#define XFER_MS 1000  // one transfer, clock stretching included
+#define READY_MS 1000 // a read answered "retry" until then: the AEC filter commands take a while
 
 static i2c_master_bus_handle_t bus;
 static i2c_master_dev_handle_t xvf, codec;
@@ -35,7 +37,7 @@ esp_err_t xvf_control_init(gpio_num_t sda, gpio_num_t scl)
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = XVF_I2C_ADDR,
         .scl_speed_hz = 100000,
-        .scl_wait_us = 20000, // the XVF3800 stretches the clock while it prepares a response
+        .scl_wait_us = 100000, // the XVF3800 stretches the clock while it prepares a response
     };
     ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(bus, &dev_cfg, &xvf), TAG, "XVF3800");
     dev_cfg.device_address = CODEC_I2C_ADDR;
@@ -53,9 +55,11 @@ esp_err_t xvf_read(uint8_t resid, uint8_t cmd, void *out, size_t len)
     uint8_t request[3] = {resid, (uint8_t)(cmd | 0x80), (uint8_t)(len + 1)};
     uint8_t response[MAX_PAYLOAD + 1];
     ESP_RETURN_ON_FALSE(len <= MAX_PAYLOAD, ESP_ERR_INVALID_SIZE, TAG, "read too long");
-    for (int attempt = 0; attempt < 50; attempt++) {
-        ESP_RETURN_ON_ERROR(i2c_master_transmit(xvf, request, sizeof(request), 100), TAG, "request %u:%u", resid, cmd);
-        ESP_RETURN_ON_ERROR(i2c_master_receive(xvf, response, len + 1, 100), TAG, "response %u:%u", resid, cmd);
+    const TickType_t start = xTaskGetTickCount();
+    while (xTaskGetTickCount() - start < pdMS_TO_TICKS(READY_MS)) {
+        ESP_RETURN_ON_ERROR(i2c_master_transmit(xvf, request, sizeof(request), XFER_MS), TAG, "request %u:%u", resid,
+                            cmd);
+        ESP_RETURN_ON_ERROR(i2c_master_receive(xvf, response, len + 1, XFER_MS), TAG, "response %u:%u", resid, cmd);
         if (response[0] == STATUS_OK) {
             memcpy(out, response + 1, len);
             return ESP_OK;
@@ -74,7 +78,7 @@ esp_err_t xvf_write(uint8_t resid, uint8_t cmd, const void *data, size_t len)
     uint8_t request[3 + MAX_PAYLOAD] = {resid, cmd, (uint8_t)len};
     ESP_RETURN_ON_FALSE(len <= MAX_PAYLOAD, ESP_ERR_INVALID_SIZE, TAG, "write too long");
     memcpy(request + 3, data, len);
-    return i2c_master_transmit(xvf, request, 3 + len, 100);
+    return i2c_master_transmit(xvf, request, 3 + len, XFER_MS);
 }
 
 esp_err_t codec_read(uint8_t reg, uint8_t *value)

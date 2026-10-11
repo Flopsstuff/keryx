@@ -32,8 +32,8 @@ XVF3800's I2S bus to the host.
 - At start-up it sets the XVF3800's ASR output gain (`AEC_ASROUTGAIN`, reset to 1.0 by the chip) to 4.0, +12 dB,
   over I2C with `components/xvf_control`. The ASR path has no AGC or limiter, so this fixed gain is its whole level
   control: speech at a distance now peaks around −15 dBFS instead of −27.
-- Speaker: 48 kHz, 16-bit stereo to the headphone jack, with the host's volume and mute applied in software. The
-  XVF3800 reads the same line as its echo-cancellation reference.
+- Speaker: 48 kHz, 16-bit stereo, with the host's volume and mute applied in software, mixed to mono with everything
+  else the board plays (see Volume below for how it reaches the codec and the XVF3800's echo reference).
 - The start-up log is printed over the USB serial console; 4 s after boot TinyUSB takes the USB PHY, the console
   disappears and a composite device appears: the sound card (macOS lists it as "Keryx") and a CDC serial port
   (`/dev/cu.usbmodemkeryx_proto*` on macOS, `/dev/ttyACM*` on Linux, USB ID 303A:8000).
@@ -86,7 +86,9 @@ predecessors.
 - Serial port commands besides `bootloader` and `reboot`: `loop on` puts the XVF3800's echo reference — what was
   played — on the left capture channel instead of the processed beam, to measure the playback path; `loop mic`
   puts microphone 0 there, before AEC; `loop off` restores the beam. `xvf get|set <resid> <cmd> <int32|float|uint8>
-  [count | values…]` reads or writes any XVF3800 parameter (e.g. `xvf get 33 3 int32`, AEC converged). While
+  [count | values…]` reads or writes any XVF3800 parameter (e.g. `xvf get 33 3 int32`, AEC converged); `set` reads
+  the value back, `xvf write …` does not, for write-only commands (the AEC filter's, see
+  [the board notes](../docs/respeaker-flex-xvf3800.md#reading-the-aec-filter)). While
   `loop on` is set, the ASR beam lets echo through: it is for measuring only.
 - Two I2C buses: the XVF3800's (D4/D5, also the codec) and one for our own STEMMA QT peripherals on D0 (SDA) / D3
   (SCL), I2C_NUM_1. They are kept apart because with the Adafruit rotary encoder (seesaw on a SAMD09) on the
@@ -128,20 +130,29 @@ predecessors.
   frames up, bytes down, playback underruns.
 - Volume: the board's own, 0–100 over everything it plays (the bridge's answers, its sounds, USB audio): 0 is silence,
   then 0.5 dB a step up to 0 dB at 100, kept in NVS (saved 2 s after the last change). It is the TLV320AIC3104 codec's
-  analog volume in front of its output drivers (page 0 registers 47/64 for the headphone jack, 82/85 for the line
-  output that feeds the amplifier on the SPEAKER connector; 0.5 dB a step down to −50 dB, soft-stepped by the codec):
-  the DAC's hiss comes before it and goes down with the voice, where a software gain left it as loud at any volume. The
-  line output mixes both DACs, so it sits 12 steps (6 dB) lower than the jack: 0 dB of mix at 100, where the XVF3800's
-  own set-up had −12 dB on each. Volume 0 also mutes the routes and the output drivers (registers 51/65/86, whose
-  levels stay as the XVF3800 set them: +6 dB on the jack, 0 dB on the line; raising the line's only raised the hiss).
-  The XVF3800 sets up the codec at boot, possibly after us, so the `xvf` task reads the registers back every 2 s and
-  sets them again if they changed. The volume comes after the XVF3800's AEC reference, so the chip is told it as
-  `AEC_FAR_EXTGAIN` (the gain between the reference and the loudspeaker, as in its USB variant). While the volume was a
-  software gain before the reference that was wrong: told −23 dB at 54, the residual echo suppression expected that
-  much less echo, and Keryx's voice came through the processed beam at +20.6 dB over silence instead of +3.1 dB.
-  `status` shows `far_extgain=…dB` and `codec=ok headphones=0x… line=0x… line_level=0x…` (the registers 47, 82 and
-  86). `volume`, `volume <0-100>`, `volume up|down` (±10) on the console; `{"type":"volume",…}` from the bridge, see
-  below. The macOS volume of the Keryx sound card still applies to USB audio on top, as a software gain.
+  analog volume in front of its output drivers (page 0, Table 10-51, soft-stepped by the codec): the DAC's hiss comes
+  before it and goes down with the voice, where a software gain left it as loud at any volume. The XVF3800 takes its AEC
+  reference from I2S channel 0 (L) only and sends both channels to the DACs, so the playback task puts different things
+  in them: R is the mono mix at full scale, routed at the volume to the headphone jack (registers 50/64) and to the line
+  output that feeds the amplifier on the SPEAKER connector (85); L is the same mix scaled in software by the codec's
+  gain at that volume (Table 10-51's exact values), only the AEC reference, its routes to the outputs (47, 61, 82) off.
+  The echo path from the reference to the microphones then does not change with the volume. With the volume after the
+  reference it did, and the AEC, which follows a louder echo, never followed a quieter one: after the volume went down,
+  Keryx's own voice stayed in the ASR beam at about −35 dBFS, at any lower volume and with the speaker muted, until the
+  XVF3800 restarted; `AEC_FAR_EXTGAIN` (set to the volume, or its opposite) and rescaling the AEC filter by hand did not
+  change that. Measured with the split, down from 66 or 90 to 40 the ASR beam carries Keryx at −54 to −58 dBFS, as a
+  freshly converged AEC does. `AEC_FAR_EXTGAIN`, the gain between the reference and the loudspeaker, is therefore 0,
+  written at start-up (the XVF3800 keeps it over a restart of the ESP32 alone); while the volume was a software gain,
+  −23 dB at 54 made the residual echo suppression expect that much less echo, and Keryx's voice came through the
+  processed beam at +20.6 dB over silence instead of +3.1 dB. Volume 0 also mutes the routes and the output drivers
+  (registers 51/65/86, whose levels stay as the XVF3800 set them: +6 dB on the jack, 0 dB on the line; raising the
+  line's only raised the hiss). The XVF3800 sets up the codec at boot (both DACs into every output), possibly after us,
+  so the `xvf` task reads the registers back every 2 s and sets them again if they changed. `status` shows
+  `far_extgain=…dB` and `codec=ok line=0x… line_from_l=0x… line_level=0x… reference=…dB` (registers 85, 82 and 86, and
+  the reference's gain). At volume 90 the AEC cancels clearly less, in either scheme: probably the speaker is then
+  louder than the microphones' gain allows for (see the board notes; not yet checked). `volume`, `volume <0-100>`,
+  `volume up|down` (±10) on the console; `{"type":"volume",…}` from the bridge, see below. The macOS volume of the Keryx
+  sound card still applies to USB audio on top, as a software gain.
 - Microphone mute: while muted nothing captured leaves the board — the USB microphone and the bridge get silence,
   a running stream stops at once, the wake word does not run (and starts afresh, with its 2.5 s warm-up, when
   unmuted); playback is not affected. A short falling / rising two-note sound marks the change. Kept in NVS, saved
