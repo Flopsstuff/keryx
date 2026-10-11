@@ -16,9 +16,9 @@
 typedef enum {
     KERYX_PANEL_IDLE,       // a clock, once SNTP has set the time
     KERYX_PANEL_OFFLINE,    // no bridge: one dim pixel breathing
-    KERYX_PANEL_LISTENING,  // the microphone streams to the bridge
+    KERYX_PANEL_LISTENING,  // the microphone streams to the bridge: a meter of its level from 3 and 9 o'clock
     KERYX_PANEL_THINKING,   // waiting for the answer: a comet going round
-    KERYX_PANEL_SPEAKING,   // playing the answer: the ring follows the speech
+    KERYX_PANEL_SPEAKING,   // playing the answer: the same meter, of what is played, in another colour
     KERYX_PANEL_MUTED,      // the microphone is muted: the clock with red marks
 } keryx_panel_state_t;
 
@@ -28,7 +28,8 @@ typedef struct {
     void (*long_pressed)(void);          // held for 1 s, while still held; no short press follows
     keryx_panel_state_t (*state)(void);  // asked every frame
     int (*volume)(void);                 // 0..100; shown on the ring for a moment whenever it changes
-    int (*speech_level)(void);           // peak of the answer being played, 0..32767
+    int (*speech_level)(void);           // peak of what is being played (before the volume), 0..32767
+    int (*mic_level)(void);              // peak of the microphone (the ASR beam) in its last block, 0..32767
     int (*update_progress)(void);        // 0..100 while new firmware downloads (shown above everything), else -1
 } keryx_panel_callbacks_t;
 
@@ -42,6 +43,9 @@ void keryx_panel_set_layout(int top, bool reversed);
 // The brightness at most, in % of full (1..100), by day and by night, and when each begins (minutes after midnight,
 // local time). Until SNTP has set the clock it is day.
 void keryx_panel_set_brightness(int day, int night, int day_minute, int night_minute);
+
+// The hues (0..359) of listening and of speaking.
+void keryx_panel_set_hues(int listening, int speaking);
 
 // Whether the ring is at its night brightness now.
 bool keryx_panel_night(void);

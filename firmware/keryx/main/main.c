@@ -148,6 +148,7 @@ static volatile float stt_l_weight;                   // 0: all R, 1: all L; for
 static int ring_top;          // the ring's pixel at 12 o'clock, kept in NVS (`ring top`)
 static bool ring_reversed;    // its pixel numbers run anticlockwise (`ring reverse`)
 static int ring_day = 20, ring_night = 5;           // brightness in % (`ring brightness`)
+static int ring_hue_listening = 220, ring_hue_speaking = 160;  // `ring hue`
 static int ring_day_from = 7 * 60, ring_night_from = 22 * 60;  // minutes after midnight
 static volatile uint32_t speaker_volume = 100;
 static volatile bool speaker_muted;
@@ -157,7 +158,8 @@ static volatile int64_t last_playback_us;
 static volatile bool wake_sound_requested;
 static volatile int mute_sound_requested;  // 1: muted, 2: unmuted
 static volatile bool thinking_requested;
-static volatile int bridge_peak;  // of the last block of the bridge's answer, for the ring
+static volatile int played_peak;  // of the last block played (R, before the volume), for the ring
+static volatile int mic_peak;     // of the last block of the ASR beam, for the ring
 static volatile int64_t thinking_started_us;
 
 static void settings_save(void *arg)
@@ -173,6 +175,8 @@ static void settings_save(void *arg)
         nvs_set_u8(nvs, "ring_night", (uint8_t)ring_night);
         nvs_set_u16(nvs, "ring_day_at", (uint16_t)ring_day_from);
         nvs_set_u16(nvs, "ring_night_at", (uint16_t)ring_night_from);
+        nvs_set_u16(nvs, "ring_hue_l", (uint16_t)ring_hue_listening);
+        nvs_set_u16(nvs, "ring_hue_s", (uint16_t)ring_hue_speaking);
         nvs_commit(nvs);
         nvs_close(nvs);
     }
@@ -387,9 +391,17 @@ static void settings_load(void)
         if (nvs_get_u16(nvs, "ring_night_at", &night_from) == ESP_OK && night_from < 24 * 60) {
             ring_night_from = night_from;
         }
+        uint16_t hue;
+        if (nvs_get_u16(nvs, "ring_hue_l", &hue) == ESP_OK && hue < 360) {
+            ring_hue_listening = hue;
+        }
+        if (nvs_get_u16(nvs, "ring_hue_s", &hue) == ESP_OK && hue < 360) {
+            ring_hue_speaking = hue;
+        }
         nvs_close(nvs);
     }
     keryx_panel_set_brightness(ring_day, ring_night, ring_day_from, ring_night_from);
+    keryx_panel_set_hues(ring_hue_listening, ring_hue_speaking);
     ring_top = top;
     ring_reversed = reversed != 0;
     keryx_panel_set_layout(ring_top, ring_reversed);
@@ -513,7 +525,6 @@ static void playback_task(void *arg)
             int level = bridge[i] < 0 ? -bridge[i] : bridge[i];
             peak = level > peak ? level : peak;
         }
-        bridge_peak = peak;
         host_peak = peak > host_peak ? peak : host_peak;
         if (thinking_requested && (host_peak > HOST_AUDIBLE ||
                                    esp_timer_get_time() - thinking_started_us > THINKING_MAX_MS * 1000LL)) {
@@ -554,12 +565,15 @@ static void playback_task(void *arg)
             out[2 * f] = (int32_t)(((int64_t)played * reference) >> 30);  // L: the AEC reference, at the volume
 
         }
+        int out_peak = 0;
         for (int i = 0; i < BLOCK_FRAMES; i++) {
             const int32_t s = out[2 * i + 1] >> 16;
-            if (s > OUT_AUDIBLE || s < -OUT_AUDIBLE) {
-                last_audible_out_us = esp_timer_get_time();  // for the auto STT channel
-                break;
-            }
+            const int level = s < 0 ? -s : s;
+            out_peak = level > out_peak ? level : out_peak;
+        }
+        played_peak = out_peak;
+        if (out_peak > OUT_AUDIBLE) {
+            last_audible_out_us = esp_timer_get_time();  // for the auto STT channel
         }
         size_t written;
         i2s_channel_write(i2s_tx, out, sizeof(out), &written, portMAX_DELAY);
@@ -651,12 +665,15 @@ static void capture_task(void *arg)
             listening_since = esp_timer_get_time();
             was_muted = false;
         }
+        int block_peak = 0;
         for (int i = 0; i < BLOCK_FRAMES && !muted; i++) {
             asr[i] = pcm[2 * i + 1];
             proc[i] = pcm[2 * i];
             int level = asr[i] < 0 ? -asr[i] : asr[i];
-            peak_level = level > peak_level ? level : peak_level;
+            block_peak = level > block_peak ? level : block_peak;
         }
+        mic_peak = block_peak;
+        peak_level = block_peak > peak_level ? block_peak : peak_level;
         size_t n16 = muted ? 0 : kww_decimate(&decimate, asr, BLOCK_FRAMES, audio16);
         if (!muted) {
             kww_decimate(decimate_l, proc, BLOCK_FRAMES, proc16);  // the same count: both see whole blocks
@@ -1029,6 +1046,23 @@ static void ring_brightness_command(const char *args)
                          ring_night_from % 60, keryx_panel_night() ? "night" : "day");
 }
 
+// "ring hue [<listening> <speaking>]": the hues (0-359) the ring listens and speaks in
+static void ring_hue_command(const char *args)
+{
+    if (*args != '\0') {
+        int listening, speaking;
+        if (sscanf(args, "%d %d", &listening, &speaking) != 2 || listening < 0 || listening > 359 || speaking < 0 ||
+            speaking > 359) {
+            keryx_console_printf("error usage: ring hue [<listening 0-359> <speaking 0-359>]\n");
+            return;
+        }
+        ring_hue_listening = listening, ring_hue_speaking = speaking;
+        keryx_panel_set_hues(listening, speaking);
+        settings_save_in(VOLUME_SAVE_MS);
+    }
+    keryx_console_printf("ok ring hue listening=%d speaking=%d\n", ring_hue_listening, ring_hue_speaking);
+}
+
 // Serial port commands beyond keryx_console's own.
 static bool console_command(const char *cmd)
 {
@@ -1106,6 +1140,10 @@ static bool console_command(const char *cmd)
         }
         keryx_console_printf("ok stt channel %c, now %.0f %% L, L scaled by %.1f dB\n", "lra"[stt_channel],
                              stt_l_weight * 100.0f, 20.0f * log10f(stt_l_scale));
+        return true;
+    }
+    if (strcmp(cmd, "ring hue") == 0 || strncmp(cmd, "ring hue ", 9) == 0) {
+        ring_hue_command(cmd + 8 + (cmd[8] == ' '));
         return true;
     }
     if (strcmp(cmd, "ring brightness") == 0 || strncmp(cmd, "ring brightness ", 16) == 0) {
@@ -1283,7 +1321,12 @@ static keryx_panel_state_t panel_state(void)
 
 static int panel_speech_level(void)
 {
-    return bridge_peak;
+    return played_peak;
+}
+
+static int panel_mic_level(void)
+{
+    return mic_peak;
 }
 
 void app_main(void)
@@ -1362,6 +1405,7 @@ void app_main(void)
         const keryx_panel_callbacks_t panel_callbacks = {.turned = panel_turned, .pressed = panel_pressed,
                                                          .long_pressed = panel_long_pressed, .state = panel_state,
                                                          .volume = get_volume, .speech_level = panel_speech_level,
+                                                         .mic_level = panel_mic_level,
                                                          .update_progress = keryx_ota_progress};
         err = keryx_panel_start(periph_bus, &panel_callbacks);
         if (err != ESP_OK) {

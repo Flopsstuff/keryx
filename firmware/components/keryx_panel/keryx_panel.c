@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -24,6 +25,12 @@ static const char *TAG = "panel";
 #define MAX_STEPS 50            // more detents than this in one frame is a misread, not a turn
 
 #define RING_PIXELS 24
+
+// the meters' range: a peak at the floor lights nothing beyond the roots, at the top the whole ring
+#define MIC_FLOOR_DB -45.0f     // the ASR beam: the room's noise peaks below this
+#define MIC_TOP_DB -12.0f       // speech at a distance peaks around -15 dBFS
+#define PLAY_FLOOR_DB -40.0f
+#define PLAY_TOP_DB -8.0f       // the bridge's answers peak around -10 dBFS
 
 // seesaw registers: module, then function
 #define SS_STATUS 0x00
@@ -198,6 +205,7 @@ static volatile int ring_top;
 static volatile bool ring_reversed;
 // the most any channel gets, in % of full: by day and by night, and the minutes after midnight each begins
 static volatile int day_percent = 20, night_percent = 5, day_from = 7 * 60, night_from = 22 * 60;
+static volatile int hue_listening = 220, hue_speaking = 160;  // `ring hue`
 
 // whether it is night now; day while the clock is not set
 static bool is_night(void)
@@ -229,10 +237,49 @@ static void put(int i, float r, float g, float b, float level)
     add(i, r, g, b, level);
 }
 
-static void fill(float r, float g, float b, float level)
+// a colour of the hue (degrees) at saturation 0..1, full value
+static void hue_rgb(float hue, float saturation, float rgb[3])
 {
+    const float h = fmodf(hue, 360.0f) / 60.0f, x = 1 - fabsf(fmodf(h, 2.0f) - 1);
+    const int sector = (int)h;
+    const float c[6][3] = {{1, x, 0}, {x, 1, 0}, {0, 1, x}, {0, x, 1}, {x, 0, 1}, {1, 0, x}};
+    for (int k = 0; k < 3; k++) {
+        rgb[k] = 1 - saturation * (1 - c[sector % 6][k]);
+    }
+}
+
+// 0..1 from a peak (0..32767), by its dBFS between floor and top
+static float meter_level(int peak, float floor_db, float top_db)
+{
+    if (peak <= 0) {
+        return 0;
+    }
+    const float level = (20.0f * log10f(peak / 32768.0f) - floor_db) / (top_db - floor_db);
+    return level < 0 ? 0 : level > 1 ? 1 : level;
+}
+
+// A level meter: arcs grow from 3 and 9 o'clock both ways, to meet at 12 and 6 at level 1, brightest at their roots;
+// the roots stay at half brightness in silence, and the rest of the ring glows at `glow`.
+static void meter(float level, const float rgb[3], float glow)
+{
+    const int quarter = RING_PIXELS / 4;
+    const float span = level * quarter;
     for (int i = 0; i < RING_PIXELS; i++) {
-        add(i, r, g, b, level);
+        int d = 0;  // pixels to the nearer root
+        for (int root = quarter; root < RING_PIXELS; root += 2 * quarter) {
+            const int to = abs(i - root) % RING_PIXELS, near = to < RING_PIXELS - to ? to : RING_PIXELS - to;
+            d = root == quarter || near < d ? near : d;
+        }
+        float v = glow;
+        if (d == 0) {
+            v = 0.71f + 0.29f * level;  // 0.71 squared: half
+        } else {
+            const float lit = span - (d - 1);
+            const float shade = 1 - 0.4f * (d - 1) / (quarter - 1);
+            const float arc = (lit >= 1 ? 1 : lit > 0 ? lit : 0) * shade;
+            v = arc > v ? arc : v;
+        }
+        add(i, rgb[0], rgb[1], rgb[2], v);
     }
 }
 
@@ -286,7 +333,7 @@ static void render(int64_t now)
 {
     static int last_volume = -1;
     static int64_t volume_until;
-    static float speech;  // the speech level, smoothed
+    static float speech, mic;  // the meters' levels, smoothed: quick up, slow down
     const float t = now / 1e6f;
     const float breath = 0.5f + 0.5f * sinf(2 * (float)M_PI * t / 3.0f);  // one breath in 3 s
 
@@ -298,8 +345,10 @@ static void render(int64_t now)
         }
         last_volume = volume;
     }
-    const float level = cb.speech_level() / 8000.0f;
-    speech += ((level > 1 ? 1 : level) - speech) * (level > speech ? 0.6f : 0.15f);  // quick up, slow down
+    const float played = meter_level(cb.speech_level(), PLAY_FLOOR_DB, PLAY_TOP_DB);
+    speech += (played - speech) * (played > speech ? 0.5f : 0.12f);
+    const float heard = cb.mic_level != NULL ? meter_level(cb.mic_level(), MIC_FLOOR_DB, MIC_TOP_DB) : 0;
+    mic += (heard - mic) * (heard > mic ? 0.5f : 0.12f);
 
     const int update = cb.update_progress != NULL ? cb.update_progress() : -1;
     if (update >= 0) {
@@ -328,9 +377,12 @@ static void render(int64_t now)
         case KERYX_PANEL_OFFLINE:
             add(0, 1.0f, 0.35f, 0, 0.2f + 0.3f * breath);
             break;
-        case KERYX_PANEL_LISTENING:
-            fill(0, 0.6f, 1, 0.65f + 0.35f * breath);
+        case KERYX_PANEL_LISTENING: {
+            float rgb[3];
+            hue_rgb(hue_listening, 1.0f, rgb);
+            meter(mic, rgb, 0.1f + 0.1f * breath);
             break;
+        }
         case KERYX_PANEL_THINKING: {
             // a comet going round clockwise once a second, its tail a third of the ring
             const float head = fmodf(t, 1.0f) * RING_PIXELS;
@@ -343,9 +395,12 @@ static void render(int64_t now)
             }
             break;
         }
-        case KERYX_PANEL_SPEAKING:
-            fill(0.2f, 1, 0.6f, 0.35f + 0.65f * speech);
+        case KERYX_PANEL_SPEAKING: {
+            float rgb[3];
+            hue_rgb(hue_speaking, 0.9f, rgb);
+            meter(speech, rgb, 0.12f);
             break;
+        }
         case KERYX_PANEL_IDLE:
             clock_face(false);
             break;
@@ -438,6 +493,12 @@ void keryx_panel_set_brightness(int day, int night, int day_minute, int night_mi
     night_percent = night;
     day_from = day_minute;
     night_from = night_minute;
+}
+
+void keryx_panel_set_hues(int listening, int speaking)
+{
+    hue_listening = listening;
+    hue_speaking = speaking;
 }
 
 bool keryx_panel_night(void)
