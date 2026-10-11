@@ -248,6 +248,9 @@ def add_arguments(parser, save_dir):
                              "skipped (default 2 s)")
     parser.add_argument("--save", type=pathlib.Path, nargs="?", const=pathlib.Path(save_dir),
                         help=f"save what went to STT as 16 kHz WAV (default dir {save_dir})")
+    parser.add_argument("--diagnose-barge-in", type=pathlib.Path, nargs="?", const=pathlib.Path(save_dir) / "barge-in",
+                        help="on every voice interruption, log the echo decision and save the conversation as WAV "
+                             f"plus JSON (default dir {save_dir}/barge-in)")
     parser.add_argument("--smart-turn", type=float, default=0.5, help="xAI Smart Turn threshold (default 0.5)")
     parser.add_argument("--smart-turn-timeout", type=int, default=1500,
                         help="ms of silence that always ends the turn (default 1500)")
@@ -325,6 +328,7 @@ class Conversation:
         self.last_wake = start
         self.tail_skipped = False
         self.stt_open = None
+        self.barge_in_diagnostics = []
 
     @property
     def answering(self):
@@ -370,6 +374,31 @@ class Conversation:
         if not event.get("words") and event.get("text"):
             user.append(event["text"])
         return " ".join(user), " ".join(echo)
+
+    def diagnose_barge_in(self, event, user, echo):
+        """Log and retain everything needed to investigate an echo-filter interruption."""
+        if self.args.diagnose_barge_in is None:
+            return
+        rate = self.mic.rate
+        word_decisions = []
+        for word in event.get("words") or []:
+            text = word.get("text", "")
+            start = self.cursor0 + word.get("start", 0.0) * rate
+            end = self.cursor0 + word.get("end", word.get("start", 0.0)) * rate
+            overlap = self.app.speaker.sounded(start, end, 0.1 * rate, self.args.echo_tail * rate)
+            heard = words(text)
+            matches = {w: sorted(s for s in self.said if similar(w, s))[:5] for w in heard}
+            word_decisions.append({"text": text, "start": word.get("start"), "end": word.get("end"),
+                                   "speaker_overlap": overlap, "said_matches": matches,
+                                   "classified_as_echo": self.is_echo(word)})
+        sounding = [[(start - self.cursor0) / rate,
+                     None if end is None else (end - self.cursor0) / rate]
+                    for start, end in list(self.app.speaker.sounding)]
+        diagnostic = {"event": event, "split": {"user": user, "echo": echo},
+                      "word_decisions": word_decisions, "speaker_intervals": sounding,
+                      "said_vocabulary": sorted(self.said)}
+        self.barge_in_diagnostics.append(diagnostic)
+        log(f"barge-in diagnostics: {json.dumps(diagnostic, ensure_ascii=False, separators=(',', ':'))}", self)
 
     # ------------------------------------------------------------ the conversation
 
@@ -488,6 +517,7 @@ class Conversation:
                 return  # a stray word or two among Keryx's own may be its echo misheard; wait for more
             self.user_talking = True
             if self.args.barge_in:
+                self.diagnose_barge_in(event, user, echo)
                 self.interrupt(f"you started talking: {user!r}")
             else:
                 log("talking over Keryx; ignored (--no-barge-in)", self)
@@ -537,6 +567,7 @@ class Conversation:
             if not self.args.barge_in:
                 log(f"STT → speech_final {text!r} while {self.state}: ignored (--no-barge-in)", self)
                 return
+            self.diagnose_barge_in(event, text, echo)
             self.interrupt("a new request")
         log(f"STT → speech_final: {text!r}", self)
         print(f"\n    you:   {text}\n", flush=True)
@@ -556,16 +587,23 @@ class Conversation:
             log(f"listening for a follow-up for {self.args.follow_up:g} s", self)
 
     def save(self):
-        if not self.args.save or not self.sent:
+        diagnostic = bool(self.barge_in_diagnostics) and self.args.diagnose_barge_in is not None
+        directory = self.args.diagnose_barge_in if diagnostic else self.args.save
+        if directory is None or not self.sent:
             return
-        self.args.save.mkdir(parents=True, exist_ok=True)
-        path = self.args.save / f"{time.strftime('%Y%m%d-%H%M%S')}.wav"
+        directory.mkdir(parents=True, exist_ok=True)
+        stem = time.strftime("%Y%m%d-%H%M%S") + ("-barge-in" if diagnostic else "")
+        path = directory / f"{stem}.wav"
         with wave.open(str(path), "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
             w.setframerate(STT_RATE)
             w.writeframes(b"".join(self.sent))
         log(f"saved what went to STT: {path}", self)
+        if diagnostic:
+            metadata = path.with_suffix(".json")
+            metadata.write_text(json.dumps(self.barge_in_diagnostics, ensure_ascii=False, indent=2) + "\n")
+            log(f"saved barge-in diagnostics: {metadata}", self)
 
 
 class Assistant:

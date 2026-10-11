@@ -128,7 +128,9 @@ text-to-speech, playback and interruptions.
   the session in `~/.local/state/keryx/session.json`, so a restart does not lose it.
 - `keryx-bridge run` options, also usable in the service's `ExecStart`: `--follow-up`, `--session-timeout`,
   `--languages` (what speech-to-text may report, `ru,en,pl`), `--gain`, `--no-barge-in`,
-  `--echo` (no Hermes: says back what it heard, for testing the audio path).
+  `--echo` (no Hermes: says back what it heard, for testing the audio path). `--diagnose-barge-in [DIR]` logs each
+  word's echo-filter decision and, only when speech interrupts an answer, saves the conversation's STT audio and the
+  raw decision data as `.wav` and `.json` files (default `recordings/bridge/barge-in`).
 
 ## HTTP control
 
