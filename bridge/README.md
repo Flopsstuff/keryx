@@ -98,7 +98,7 @@ or a firewall shows up right there.
 
 | Command | |
 |---|---|
-| `keryx-bridge run` | the bridge (what the service runs); `--help` lists the options |
+| `keryx-bridge run` | the bridge (what the service runs); `--help` lists the options. At boot it waits for Hermes to answer (the service starts before Wi-Fi and Hermes are up); a wrong key or URL still stops it |
 | `keryx-bridge check` | settings, the system prompt, Hermes and xAI, without a board |
 | `keryx-bridge pair` | configure the board on USB, see above |
 | `keryx-bridge status` | what the running bridge knows: board connected, firmware, volume |

@@ -628,19 +628,31 @@ class Assistant:
 
     # ------------------------------------------------------------ setup
 
-    async def connect(self):
+    async def connect(self, wait=False):
+        """wait: retry while Hermes is unreachable instead of exiting — the service starts at boot before Wi-Fi
+        and Hermes are up. A wrong answer (bad key, wrong URL) still exits."""
         if self.args.echo:
             log("echo mode: no Hermes, Keryx says back what it heard")
         else:
-            t0 = time.monotonic()
-            try:
-                async with self.session.get(f"{self.args.hermes}/models", headers=self.hermes,
-                                            timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    body = await resp.text()
-                    if resp.status != 200:
-                        raise SystemExit(f"Hermes {self.args.hermes}/models: HTTP {resp.status} {body[:300]}")
-            except aiohttp.ClientError as e:
-                raise SystemExit(f"Hermes {self.args.hermes} unreachable: {e!r}")
+            waiting = None
+            while True:
+                t0 = time.monotonic()
+                try:
+                    async with self.session.get(f"{self.args.hermes}/models", headers=self.hermes,
+                                                timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        body = await resp.text()
+                        if resp.status != 200:
+                            raise SystemExit(f"Hermes {self.args.hermes}/models: HTTP {resp.status} {body[:300]}")
+                    break
+                except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                    if not wait:
+                        raise SystemExit(f"Hermes {self.args.hermes} unreachable: {e!r}")
+                    if waiting is None:
+                        waiting = time.monotonic()
+                        log(f"Hermes {self.args.hermes} unreachable ({e!r}), waiting for it")
+                    await asyncio.sleep(2)
+            if waiting is not None:
+                log(f"Hermes is up after {time.monotonic() - waiting:.0f} s of waiting")
             self.model = json.loads(body)["data"][0]["id"]
             log(f"hermes: {self.args.hermes}, model {self.model!r} ({(time.monotonic() - t0) * 1000:.0f} ms)")
         await self.tts_socket()

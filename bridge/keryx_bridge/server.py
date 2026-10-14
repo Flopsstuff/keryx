@@ -597,7 +597,7 @@ def add_server_arguments(parser):
 async def serve(args):
     async with aiohttp.ClientSession() as session:
         bridge = Bridge(args, session)
-        await bridge.assistant.connect()
+        await bridge.assistant.connect(wait=True)
         app = web.Application()
         app.router.add_get(args.path, bridge.handle)
         app.router.add_get(args.path + "/status", bridge.http_status)
