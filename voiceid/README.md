@@ -86,6 +86,17 @@ cd wakeword && .venv/bin/python replay.py ../voiceid/data/tts-impostors --label 
 | `install.sh [host]` | the bundle and its two models into `~/.local/share/keryx/voiceid`, here or over ssh; then restart the bridge |
 | `live.py [--save DIR]` | the stand: the board on USB as the microphone, a log line with the tag for every utterance |
 
+## From the bridge
+
+The bridge keeps what voice ID hears in its log (90 days by default, see the bridge's README): every utterance's
+WAV and a line in that day's `voices.jsonl` with the tag it got and the transcript. That is the material for the
+next calibration — other days, other moods, real guests. Fetch it, then label: the confident tags can stand, the
+doubtful ones and every `unknown` want a listen.
+
+```bash
+rsync -a rpi5.local:.local/share/keryx/voiceid/log/ voiceid/data/bridge-log/
+```
+
 `utterances.py` caches every utterance's embeddings in `cache/`; `sort_takes.py` sorted the wake word era
 recordings by voice once.
 

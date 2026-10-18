@@ -156,7 +156,8 @@ logging) behind three adapters — a microphone, a speaker and a board — so `s
 - voice ID (`keryx_bridge/voiceid.py`, made in `voiceid/`): each request goes to Hermes with `[voice: Name 0.97]`
   in front, from the audio of the utterance's non-echo words; a conversation's belief carries over short pauses. The
   speakers' names and profiles are biometric and personal: they live in untracked files only (`voiceid/speakers.json`,
-  the bundle in `~/.local/share/keryx/voiceid`), never in tracked code, docs or the prompt;
+  the bundle in `~/.local/share/keryx/voiceid`, its log of every utterance in `…/voiceid/log`), never in tracked
+  code, docs or the prompt;
 - HTTP control on the bridge port with the board token: `GET /keryx/status`, `POST /keryx/volume`,
   `POST /keryx/say`, `POST /keryx/mute` (a timed mute is the bridge's timer, lost if the bridge restarts),
   `POST /keryx/console` (a safe set of console commands, checked on the board).

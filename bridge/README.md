@@ -151,6 +151,10 @@ in [`voiceid/`](../voiceid/README.md) and are not in git.
   the bridge after it. `install.sh` installs the `voiceid` extra (`sherpa-onnx`).
 - `KERYX_VOICEID` (or `--voiceid DIR`) — another folder; without the folder, or with `--no-voiceid`, there is no tag.
 - `keryx-bridge check` says whether voice ID is on and whom it knows.
+- The voice ID log keeps every utterance it heard, to make it better from real days: per day a folder in
+  `~/.local/share/keryx/voiceid/log/` with each utterance as 16 kHz WAV and `voices.jsonl` (tag, probabilities,
+  cosines, pause, the transcript). Guests' voices land there too. `KERYX_VOICEID_LOG` moves it,
+  `KERYX_VOICEID_LOG_DAYS` (90) is how long it keeps, `--no-voiceid-log` turns it off.
 
 ## HTTP control
 

@@ -36,7 +36,7 @@ import wave
 import aiohttp
 import numpy as np
 
-from .voiceid import PAD as VOICE_PAD, VoiceID
+from .voiceid import PAD as VOICE_PAD, Log as VoiceLog, VoiceID
 
 PACKAGE = pathlib.Path(__file__).resolve().parent
 DEFAULT_PROMPT = PACKAGE / "prompts" / "voice.md"
@@ -277,6 +277,14 @@ def add_arguments(parser, save_dir):
                              "(default KERYX_VOICEID, else ~/.local/share/keryx/voiceid)")
     parser.add_argument("--no-voiceid", dest="voiceid", action="store_const", const=None,
                         help="no voice ID, even when its folder is there")
+    parser.add_argument("--voiceid-log", type=pathlib.Path,
+                        default=pathlib.Path(env("KERYX_VOICEID_LOG", "~/.local/share/keryx/voiceid/log")).expanduser(),
+                        help="where voice ID keeps every utterance it heard (WAV and voices.jsonl per day), to make it "
+                             "better later (default KERYX_VOICEID_LOG, else ~/.local/share/keryx/voiceid/log)")
+    parser.add_argument("--no-voiceid-log", dest="voiceid_log", action="store_const", const=None,
+                        help="keep nothing")
+    parser.add_argument("--voiceid-log-days", type=float, default=float(env("KERYX_VOICEID_LOG_DAYS", "90")),
+                        help="days the voice ID log keeps (default KERYX_VOICEID_LOG_DAYS, else 90)")
     parser.add_argument("--meter", type=float, default=2.0,
                         help="seconds between STT level lines during a conversation (default 2)")
     parser.add_argument("--heartbeat", type=float, default=15.0,
@@ -413,9 +421,10 @@ class Conversation:
 
     # ------------------------------------------------------------ who is talking
 
-    def hear(self, event):
+    def hear(self, event, text):
         """Voice ID of an utterance from the sound of its words (Keryx's own echo left out), run in a thread: a task
-        that gives its Heard, or None without voice ID or words with times."""
+        that gives its Heard, or None without voice ID or words with times. The voice ID log, if on, gets it with
+        the user's text."""
         if self.voice is None:
             return None
         spoken = [w for w in event.get("words") or []
@@ -429,7 +438,16 @@ class Conversation:
                                 int(self.cursor0 + (end + VOICE_PAD) * rate))
         if len(pcm) < 0.3 * rate:
             return None
-        task = asyncio.create_task(asyncio.to_thread(self.voice.hear, pcm.astype(np.float32) / 32768, start, end))
+        audio = pcm.astype(np.float32) / 32768
+        voicelog = self.app.voicelog
+
+        def work():
+            heard = self.voice.hear(audio, start, end)
+            if voicelog is not None:
+                voicelog.write(audio, heard, conversation=self.number, text=text)
+            return heard
+
+        task = asyncio.create_task(asyncio.to_thread(work))
 
         def done(t):
             if not t.cancelled():
@@ -580,7 +598,7 @@ class Conversation:
                     self.waiting_since = time.monotonic()
                 return
             log(f"STT → speech_final with Keryx's own voice removed: {self.describe(event, text, echo)}", self)
-        voice = self.hear(event)  # every utterance of the user's tells who is talking, a request or not
+        voice = self.hear(event, text)  # every utterance of the user's tells who is talking, a request or not
         language = event.get("language")
         if language and self.args.languages and language not in self.args.languages:
             # short phrases sometimes come back in a wrong language (Chinese for Russian); Hermes would answer it
@@ -665,6 +683,10 @@ class Assistant:
         self.conversation = None
         self.conversations = 0
         self.voiceid = self.load_voiceid()
+        self.voicelog = None
+        if self.voiceid and self.args.voiceid_log is not None:
+            self.voicelog = VoiceLog(self.args.voiceid_log, self.args.voiceid_log_days)
+            log(f"voice ID log: {self.args.voiceid_log}, kept {self.args.voiceid_log_days:g} days")
 
     # ------------------------------------------------------------ setup
 

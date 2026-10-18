@@ -19,11 +19,16 @@ A long utterance whose MIX_WINDOW s windows go clearly to two different known sp
 A slow model may hear only the first seconds of an utterance (the bundle's crops; calibrate.py trains it that way),
 and the models run side by side, so that on a Raspberry Pi 5 an utterance takes about half a second.
 
+A Log keeps every utterance with its tag, to make the profiles and the calibration better from real days.
+
 The tag, as the LLM gets it in front of the request: [voice: Alex 0.97], [voice: unknown 0.88], [voice: Alex+Sam 0.80]
 """
 
+import json
+import shutil
 import threading
 import time
+import wave
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -114,6 +119,8 @@ class Heard:
     one: dict  # this utterance's own probabilities by class
     speech: float  # s
     ms: float  # time it took
+    cos: list  # cosines to the profiles, models × speakers
+    pause: float | None  # s since the conversation's previous utterance
 
     @property
     def text(self):
@@ -233,4 +240,45 @@ class Tracker:
         if both is not None:
             name = "+".join(vid.names[i] for i in both)
             confidence = min(TOP, float(one[list(both)].sum() * TRUST + self.belief[list(both)].sum() * (1 - TRUST)))
-        return Heard(name, confidence, dict(zip(vid.classes, one.round(3))), speech, (time.monotonic() - t0) * 1000)
+        return Heard(name, confidence, dict(zip(vid.classes, one.round(3))), speech, (time.monotonic() - t0) * 1000,
+                     [round(float(c), 3) for c in cos], None if pause is None else round(pause, 2))
+
+
+class Log:
+    """Every utterance voice ID heard, kept to make it better later (other days, colds, real guests): per day a
+    folder <directory>/<YYYY-MM-DD>/ with each utterance as 16 kHz WAV, exactly what voice ID heard, and
+    voices.jsonl, a line per utterance with its tag, probabilities, cosines and whatever the caller adds (the
+    transcript). Days older than `days` are deleted."""
+
+    def __init__(self, directory, days):
+        self.directory = Path(directory)
+        self.days = days
+        self.lock = threading.Lock()
+        self.pruned = None
+
+    def write(self, audio, heard, **extra):
+        now = time.time()
+        day = time.strftime("%Y-%m-%d", time.localtime(now))
+        name = time.strftime("%H%M%S", time.localtime(now)) + f"-{int(now * 1000) % 1000:03d}.wav"
+        folder = self.directory / day
+        with self.lock:
+            folder.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(folder / name), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(RATE)
+                w.writeframes((np.clip(audio, -1, 1) * 32767).astype(np.int16).tobytes())
+            line = {"time": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now)), "wav": name, "tag": heard.text,
+                    "name": heard.name, "confidence": round(heard.confidence, 3), "one": heard.one, "cos": heard.cos,
+                    "speech": round(heard.speech, 2), "pause": heard.pause, "ms": round(heard.ms), **extra}
+            with open(folder / "voices.jsonl", "a") as f:
+                f.write(json.dumps(line, ensure_ascii=False, default=float) + "\n")
+            if self.pruned != day:
+                self.pruned = day
+                self.prune(now)
+
+    def prune(self, now):
+        oldest = time.strftime("%Y-%m-%d", time.localtime(now - self.days * 86400))
+        for folder in self.directory.iterdir():
+            if folder.is_dir() and len(folder.name) == 10 and folder.name < oldest:
+                shutil.rmtree(folder, ignore_errors=True)
