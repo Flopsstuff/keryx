@@ -41,6 +41,10 @@ The first Keryx, built into an Edifier R1100 speaker ([how](docs/assembly.md)):
   answer to stop it. A few seconds of silence end the conversation.
 - **Hermes does the thinking.** Requests go to Hermes through its OpenAI-compatible API, with all its tools, memory
   and skills; the answers are short and written for the ear.
+- **It knows who is talking.** Optionally, the bridge recognizes the household's voices and puts who is speaking,
+  and how sure it is, in front of every request (`[voice: Alex 0.97]`, or `unknown` for a guest), so Hermes can
+  answer each of them personally. The voice profiles come from a few minutes of each person talking through the
+  board and stay on your machines ([voice ID](voiceid/README.md)).
 - **Hermes can speak first.** The bridge gives Hermes `say.sh` for reminders, timers and anything you asked to be
   told later, and `set_volume.sh` for the speaker's volume.
 - **The room stays clean.** The XVF3800 cancels Keryx's own voice from the microphones (its playback is the echo
@@ -78,7 +82,7 @@ before anything else — see [flashing](docs/flashing.md).
 ## Documentation
 
 **[docs/index.md](docs/index.md)** is the map: flashing and pairing, the bridge, building the firmware, training
-the wake word, the board's hardware notes and the measurements behind the design choices.
+the wake word, voice ID, the board's hardware notes and the measurements behind the design choices.
 
 ## License
 
