@@ -67,6 +67,9 @@ static keryx_panel_callbacks_t cb;
 static module_t encoder = {.name = "encoder", .addr = ENCODER_ADDR};
 static module_t driver = {.name = "ring", .addr = DRIVER_ADDR};
 static volatile uint32_t i2c_errors;
+static volatile uint32_t stalls;      // frames that came STALL_MS or more late
+static volatile int stall_max_ms;     // the longest gap between two frames
+#define STALL_MS 150
 
 static uint8_t frame[RING_PIXELS * 3];  // GRB, as the WS2812 takes it
 static uint8_t shown[RING_PIXELS * 3];
@@ -428,9 +431,18 @@ static esp_err_t ring_show(void)
 static void panel_task(void *arg)
 {
     TickType_t wake = xTaskGetTickCount();
+    int64_t last = 0;
     for (;;) {
         vTaskDelayUntil(&wake, pdMS_TO_TICKS(FRAME_MS));
         int64_t now = esp_timer_get_time();
+        // a ring that stops moving: how long, and in which state, for finding out who held the task back
+        const int gap_ms = last ? (int)((now - last) / 1000) : 0;
+        last = now;
+        if (gap_ms >= STALL_MS) {
+            stalls++;
+            stall_max_ms = gap_ms > stall_max_ms ? gap_ms : stall_max_ms;
+            ESP_LOGW(TAG, "no frame for %d ms (state %d)", gap_ms, cb.state());
+        }
         module_check(&encoder, encoder_setup, now);
         module_check(&driver, driver_setup, now);
         if (encoder.ok) {
@@ -440,7 +452,12 @@ static void panel_task(void *arg)
             render(now);
             // only what changed goes out: an idle ring costs no bus time
             if (!shown_valid || memcmp(frame, shown, sizeof(frame)) != 0) {
+                const int64_t t0 = esp_timer_get_time();
                 esp_err_t err = ring_show();
+                const int show_ms = (int)((esp_timer_get_time() - t0) / 1000);
+                if (show_ms >= STALL_MS) {
+                    ESP_LOGW(TAG, "showing a frame took %d ms (%s)", show_ms, esp_err_to_name(err));
+                }
                 if (err == ESP_OK) {
                     memcpy(shown, frame, sizeof(frame));
                     shown_valid = true;
@@ -468,8 +485,10 @@ esp_err_t keryx_panel_start(i2c_master_bus_handle_t i2c_bus, const keryx_panel_c
             return err;
         }
     }
-    // never writes flash, so its stack can live in PSRAM
-    if (xTaskCreatePinnedToCoreWithCaps(panel_task, "panel", 3072, NULL, 3, NULL, 0, MALLOC_CAP_SPIRAM) != pdPASS) {
+    // never writes flash, so its stack can live in PSRAM. Core 1, under capture and playback: on core 0 a burst of
+    // the bridge's audio (it sends an answer faster than real time) kept Wi-Fi, lwIP and the WebSocket client busy
+    // for over a second, and the ring stood still as the answer began
+    if (xTaskCreatePinnedToCoreWithCaps(panel_task, "panel", 4096, NULL, 3, NULL, 1, MALLOC_CAP_SPIRAM) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
@@ -477,8 +496,9 @@ esp_err_t keryx_panel_start(i2c_master_bus_handle_t i2c_bus, const keryx_panel_c
 
 void keryx_panel_report(char *buf, size_t size)
 {
-    snprintf(buf, size, "panel encoder=%s ring=%s i2c_errors=%lu", encoder.ok ? "ok" : "missing",
-             driver.ok ? "ok" : "missing", (unsigned long)i2c_errors);
+    snprintf(buf, size, "panel encoder=%s ring=%s i2c_errors=%lu stalls=%lu longest=%d ms",
+             encoder.ok ? "ok" : "missing", driver.ok ? "ok" : "missing", (unsigned long)i2c_errors,
+             (unsigned long)stalls, stall_max_ms);
 }
 
 void keryx_panel_set_layout(int top, bool reversed)

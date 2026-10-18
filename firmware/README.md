@@ -163,9 +163,12 @@ predecessors.
 - More console commands: `wake` acts as if the wake word fired (to test the bridge without saying it), and
   `log <tag|*> <none|error|warn|info|debug>` changes a log level until the next restart (the WebSocket library's
   own log is off: it reports every failed attempt while the bridge is down).
-- Tasks: core 1 has capture (wake word) and playback; core 0 USB, Wi-Fi, lwIP, the WebSocket client, the console
-  and the panel. USB audio runs at priority 20, above lwIP (18): at 5 it starved during Wi-Fi traffic and dropped
-  audio.
+- Tasks: core 1 has capture (wake word, priority 6), playback (7) and the panel (3); core 0 USB, Wi-Fi, lwIP, the
+  WebSocket client and the console. USB audio runs at priority 20, above lwIP (18): at 5 it starved during Wi-Fi
+  traffic and dropped audio. The panel was on core 0 too, until an answer's audio, which the bridge sends faster than
+  real time (10 s of it in about a second), kept Wi-Fi, lwIP and the WebSocket client busy long enough to stop the
+  ring for over a second as Keryx began to speak. `status` counts the frames that came 150 ms or more late
+  (`stalls=… longest=… ms`), and each one is logged with the panel's state.
 - The panel (`components/keryx_panel`), on the peripherals' I2C bus: an Adafruit I2C QT Rotary Encoder (seesaw, 0x36)
   and an Adafruit NeoDriver (seesaw, 0x60) driving a ring of 24 WS2812. Turning the knob changes the volume, 2 steps (1
   dB) a detent, clockwise louder; a short press ends a running conversation (`{"type":"stop"}` to the bridge) and

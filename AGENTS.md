@@ -110,10 +110,10 @@ to the DACs, so R carries the mix at full scale to the outputs the volume is on,
 codec's gain, as the reference only (its routes to the outputs off): the echo path then does not change with the
 volume. Do not put the volume after the reference again: the AEC follows a louder echo but never a quieter one, so
 turning the volume down left Keryx's voice in the ASR beam until the XVF3800 restarted; `AEC_FAR_EXTGAIN` stays 0.
-Core 1 runs capture (wake word) and playback; core 0 runs USB (priority 20, above lwIP's 18 —
-otherwise Wi-Fi traffic starves the USB audio), Wi-Fi, lwIP (pinned to core 0), the WebSocket client, the console and
-the panel (`components/keryx_panel`: the knob and the LED ring, on an I2C bus of their own on D0/D3 — not the XVF3800's,
-which the encoder hangs).
+Core 1 runs capture (wake word) and playback, and under them the panel (`components/keryx_panel`: the knob and the LED
+ring, on an I2C bus of their own on D0/D3 — not the XVF3800's, which the encoder hangs; on core 0 an answer's audio
+burst froze the ring); core 0 runs USB (priority 20, above lwIP's 18 — otherwise Wi-Fi traffic starves the USB
+audio), Wi-Fi, lwIP (pinned to core 0), the WebSocket client and the console.
 
 The features must stay bit-exact with training: `components/micro_frontend` (vendored from pymicro-features) and
 the FFT must not be swapped, and `components/keryx_wakeword/kww_weights.h` / `include/kww_config.h` are generated
