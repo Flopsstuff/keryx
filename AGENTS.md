@@ -15,6 +15,7 @@ Hermes' OpenAI-compatible API, turns the reply into speech with xAI TTS and stre
 | `firmware/` | ESP-IDF v5.5.5 projects; `firmware/keryx/` is the real firmware, the others are predecessors and hardware checks |
 | `bridge/` | the voice bridge, an installable Python package (`keryx_bridge`, command `keryx-bridge`) run as a systemd user service |
 | `wakeword/` | data generation, training (PyTorch) and C export of the wake word model |
+| `voiceid/` | voice ID: recording the household, speaker embedding models, calibration, the live stand; makes the bundle the bridge's `keryx_bridge/voiceid.py` loads |
 | `tools/` | Mac bench tools: `converse.py` (the bridge pipeline over the board's USB sound card), `listen.py`, the mic-array `dashboard`, `xvf` control client |
 | `cad/` | printed parts (mic hat, encoder knob): Onshape FeatureScript features (`.fs`) and their STLs |
 | `setup.sh`, `say.sh`, `set_volume.sh`, `mute.sh`, `unmute.sh`, `console.sh` | one-step install on the bridge host; speak, set the volume, mute the microphone, run console commands through a running bridge |
@@ -32,6 +33,7 @@ everything below, and read the relevant one before changing a part:
 | [firmware/README.md](firmware/README.md) | every firmware project and component, all console commands, the bridge protocol v1, measurements |
 | [bridge/README.md](bridge/README.md) | installing and running the bridge, pairing (also from another computer), commands, settings, HTTP control |
 | [wakeword/README.md](wakeword/README.md) | wake word data, training and export to the firmware |
+| [voiceid/README.md](voiceid/README.md) | voice ID: recordings, models, calibration, measurements, deploying to the bridge |
 | [tools/README.md](tools/README.md) | the Mac bench tools, `converse.py` |
 | [cad/README.md](cad/README.md) | the printed parts, their parameters, editing them in Onshape (FeatureScript MCP server) |
 | [docs/respeaker-flex-xvf3800.md](docs/respeaker-flex-xvf3800.md) | the board: pins, free GPIOs and I2C, XVF3800 parameters and output mux, I2S mode, switching its firmware |
@@ -151,6 +153,10 @@ logging) behind three adapters — a microphone, a speaker and a board — so `s
 - the system prompt (`keryx_bridge/prompts/voice.md` unless `KERYX_SYSTEM_PROMPT[_PATH]`) ends with a "Device
   status" section the bridge fills per request: board volume, where the bridge's code/config/service are, and
   `set_volume.sh` / `say.sh` / `mute.sh` so Hermes on the same host can use them;
+- voice ID (`keryx_bridge/voiceid.py`, made in `voiceid/`): each request goes to Hermes with `[voice: Name 0.97]`
+  in front, from the audio of the utterance's non-echo words; a conversation's belief carries over short pauses. The
+  speakers' names and profiles are biometric and personal: they live in untracked files only (`voiceid/speakers.json`,
+  the bundle in `~/.local/share/keryx/voiceid`), never in tracked code, docs or the prompt;
 - HTTP control on the bridge port with the board token: `GET /keryx/status`, `POST /keryx/volume`,
   `POST /keryx/say`, `POST /keryx/mute` (a timed mute is the bridge's timer, lost if the bridge restarts),
   `POST /keryx/console` (a safe set of console commands, checked on the board).

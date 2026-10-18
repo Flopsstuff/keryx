@@ -1,0 +1,7 @@
+{
+  "speakers": [
+    {"id": "alex", "name": "Alex", "wake": "hey-alex", "share": 0.5},
+    {"id": "sam", "name": "Sam", "wake": "hey-sam", "share": 0.45}
+  ],
+  "other": 0.05
+}

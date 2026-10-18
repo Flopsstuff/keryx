@@ -39,7 +39,7 @@ PY
 say "Package into $VENV"
 [ -x "$VENV/bin/python" ] || python3 -m venv "$VENV"
 "$VENV/bin/pip" install -q --upgrade pip
-"$VENV/bin/pip" install -q -e "$BRIDGE"
+"$VENV/bin/pip" install -q -e "$BRIDGE[voiceid]"
 "$VENV/bin/keryx-bridge" --version
 
 say "Config $CONFIG"

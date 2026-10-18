@@ -23,6 +23,8 @@ answer.
 - [Firmware](../firmware/README.md) — what each ESP-IDF project and component does, the console commands, the
   bridge protocol v1, measurements.
 - [Wake word](../wakeword/README.md) — data, training and export of the "Hey Keryx" model.
+- [Voice ID](../voiceid/README.md) — who is talking: recording the household, speaker embedding models, calibration,
+  the live stand, and the bundle the bridge loads.
 - [Tools](../tools/README.md) — bench tools on the Mac: XVF3800 control, the mic-array dashboard, recording around
   wake events, the USB conversation loop.
 

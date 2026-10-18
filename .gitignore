@@ -38,3 +38,11 @@ HANDOFF.md
 
 # Python packaging
 *.egg-info/
+
+# voice ID: downloaded models, embeddings, voice profiles (biometric), our recordings and who we are
+voiceid/models/
+voiceid/cache/
+voiceid/data/
+voiceid/profiles/
+voiceid/speakers.json
+voiceid/exclude.txt

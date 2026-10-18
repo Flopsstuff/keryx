@@ -99,7 +99,7 @@ or a firewall shows up right there.
 | Command | |
 |---|---|
 | `keryx-bridge run` | the bridge (what the service runs); `--help` lists the options. At boot it waits for Hermes to answer (the service starts before Wi-Fi and Hermes are up); a wrong key or URL still stops it |
-| `keryx-bridge check` | settings, the system prompt, Hermes and xAI, without a board |
+| `keryx-bridge check` | settings, the system prompt, voice ID, Hermes and xAI, without a board |
 | `keryx-bridge pair` | configure the board on USB, see above |
 | `keryx-bridge status` | what the running bridge knows: board connected, firmware, volume |
 | `keryx-bridge volume 60` / `+10` / `-10` | the board's volume, 0–100 (100 is 0 dB, 0.5 dB a step) |
@@ -131,6 +131,26 @@ text-to-speech, playback and interruptions.
   `--echo` (no Hermes: says back what it heard, for testing the audio path). `--diagnose-barge-in [DIR]` logs each
   word's echo-filter decision and, only when speech interrupts an answer, saves the conversation's STT audio and the
   raw decision data as `.wav` and `.json` files (default `recordings/bridge/barge-in`).
+
+## Voice ID
+
+With voice ID in place the bridge knows who is talking: every request reaches Hermes with a tag in front,
+`[voice: Alex 0.97] what's on tomorrow?` — the most likely speaker and how sure that is (0–1), `unknown` for a voice
+it does not know, `Alex+Sam` for two people in one utterance. The voice prompt tells Hermes what the tag means, and
+the "Device status" lines name the people it knows. The tag is a guess from the sound of the voice, for
+personalising answers, not a proof of who is speaking.
+
+For every utterance the bridge takes the audio of its words from the board's stream (Keryx's own echo left out),
+compares two speaker embeddings with the household's voice profiles and calibrates the result; over a conversation
+a short "yes" keeps the speaker of the request before it, and a pause lets it change. The log shows each one:
+`voice: [voice: Alex 0.97] (2.1 s; utterance alex 0.96 sam 0.00 other 0.04; 180 ms)`. The work is in
+[`keryx_bridge/voiceid.py`](keryx_bridge/voiceid.py); the profiles and the calibration are made from recordings
+in [`voiceid/`](../voiceid/README.md) and are not in git.
+
+- `voiceid/install.sh [host]` puts them in `~/.local/share/keryx/voiceid` here or on the bridge's machine; restart
+  the bridge after it. `install.sh` installs the `voiceid` extra (`sherpa-onnx`).
+- `KERYX_VOICEID` (or `--voiceid DIR`) — another folder; without the folder, or with `--no-voiceid`, there is no tag.
+- `keryx-bridge check` says whether voice ID is on and whom it knows.
 
 ## HTTP control
 

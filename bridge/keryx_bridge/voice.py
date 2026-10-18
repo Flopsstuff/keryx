@@ -36,9 +36,12 @@ import wave
 import aiohttp
 import numpy as np
 
+from .voiceid import PAD as VOICE_PAD, VoiceID
+
 PACKAGE = pathlib.Path(__file__).resolve().parent
 DEFAULT_PROMPT = PACKAGE / "prompts" / "voice.md"
 STT_RATE = 16000
+VOICE_WAIT = 2.0  # s a request waits for its voice ID before it goes without the tag
 
 
 def config_file():
@@ -267,6 +270,13 @@ def add_arguments(parser, save_dir):
                              "(default KERYX_HERMES_SESSION_KEY, else keryx)")
     parser.add_argument("--system", help="system prompt for the voice channel (default KERYX_SYSTEM_PROMPT, "
                                           "else the file KERYX_SYSTEM_PROMPT_PATH, else the bundled one)")
+    parser.add_argument("--voiceid", type=pathlib.Path,
+                        default=pathlib.Path(env("KERYX_VOICEID", "~/.local/share/keryx/voiceid")).expanduser(),
+                        help="folder with voiceid.npz and its models (voiceid/README.md): who is talking goes to "
+                             "Hermes as a [voice: …] tag in front of each request; no such folder, no tag "
+                             "(default KERYX_VOICEID, else ~/.local/share/keryx/voiceid)")
+    parser.add_argument("--no-voiceid", dest="voiceid", action="store_const", const=None,
+                        help="no voice ID, even when its folder is there")
     parser.add_argument("--meter", type=float, default=2.0,
                         help="seconds between STT level lines during a conversation (default 2)")
     parser.add_argument("--heartbeat", type=float, default=15.0,
@@ -329,6 +339,7 @@ class Conversation:
         self.tail_skipped = False
         self.stt_open = None
         self.barge_in_diagnostics = []
+        self.voice = app.voiceid.tracker() if app.voiceid else None  # who is talking, over the conversation
 
     @property
     def answering(self):
@@ -399,6 +410,33 @@ class Conversation:
                       "said_vocabulary": sorted(self.said)}
         self.barge_in_diagnostics.append(diagnostic)
         log(f"barge-in diagnostics: {json.dumps(diagnostic, ensure_ascii=False, separators=(',', ':'))}", self)
+
+    # ------------------------------------------------------------ who is talking
+
+    def hear(self, event):
+        """Voice ID of an utterance from the sound of its words (Keryx's own echo left out), run in a thread: a task
+        that gives its Heard, or None without voice ID or words with times."""
+        if self.voice is None:
+            return None
+        spoken = [w for w in event.get("words") or []
+                  if "start" in w and not (self.args.echo_filter and self.is_echo(w))]
+        if not spoken:
+            return None
+        start = min(w["start"] for w in spoken)
+        end = max(w.get("end", w["start"]) for w in spoken)
+        rate = self.mic.rate
+        pcm = self.mic.reader()(int(self.cursor0 + (start - VOICE_PAD) * rate),
+                                int(self.cursor0 + (end + VOICE_PAD) * rate))
+        if len(pcm) < 0.3 * rate:
+            return None
+        task = asyncio.create_task(asyncio.to_thread(self.voice.hear, pcm.astype(np.float32) / 32768, start, end))
+
+        def done(t):
+            if not t.cancelled():
+                log(f"voice ID: ERROR {t.exception()!r}" if t.exception() else f"voice: {t.result().describe()}", self)
+
+        task.add_done_callback(done)
+        return task
 
     # ------------------------------------------------------------ the conversation
 
@@ -542,6 +580,7 @@ class Conversation:
                     self.waiting_since = time.monotonic()
                 return
             log(f"STT → speech_final with Keryx's own voice removed: {self.describe(event, text, echo)}", self)
+        voice = self.hear(event)  # every utterance of the user's tells who is talking, a request or not
         language = event.get("language")
         if language and self.args.languages and language not in self.args.languages:
             # short phrases sometimes come back in a wrong language (Chinese for Russian); Hermes would answer it
@@ -576,7 +615,7 @@ class Conversation:
         exchange.mark("speech_final")
         if self.exchanges == 1:
             exchange.marks.update(wake=self.start, stt_open=self.stt_open)
-        self.answer_task = asyncio.create_task(self.app.answer(text, exchange, self))
+        self.answer_task = asyncio.create_task(self.app.answer(text, exchange, self, voice))
         self.answer_task.add_done_callback(self.answered)
 
     def answered(self, task):
@@ -625,8 +664,34 @@ class Assistant:
         self.tts_lock = asyncio.Lock()
         self.conversation = None
         self.conversations = 0
+        self.voiceid = self.load_voiceid()
 
     # ------------------------------------------------------------ setup
+
+    def load_voiceid(self):
+        if self.args.voiceid is None:
+            log("voice ID: off (--no-voiceid)")
+            return None
+        if why := VoiceID.available(self.args.voiceid):
+            log(f"voice ID: off, {why}")
+            return None
+        t0 = time.monotonic()
+        voiceid = VoiceID(self.args.voiceid)
+        log(f"voice ID: {', '.join(voiceid.names[:-1])} from {self.args.voiceid}, made on the "
+            f"{'processed' if voiceid.channel == 'l' else 'ASR'} beam ({(time.monotonic() - t0) * 1000:.0f} ms)")
+        return voiceid
+
+    async def voice_tag(self, voice, conv):
+        """The Heard of a request's voice ID task, or None when there is none or it takes too long."""
+        if voice is None:
+            return None
+        try:
+            return await asyncio.wait_for(asyncio.shield(voice), VOICE_WAIT)
+        except asyncio.TimeoutError:
+            log(f"voice ID: nothing within {VOICE_WAIT:g} s, the request goes without the tag", conv)
+        except Exception:  # noqa: BLE001 - logged where the task ends; the request goes on without it
+            pass
+        return None
 
     async def connect(self, wait=False):
         """wait: retry while Hermes is unreachable instead of exiting — the service starts at boot before Wi-Fi
@@ -731,7 +796,7 @@ class Assistant:
 
     # ------------------------------------------------------------ Hermes → text-to-speech → speaker
 
-    async def answer(self, text, exchange, conv):
+    async def answer(self, text, exchange, conv, voice=None):
         conv.state = "thinking"
         log(f"--- exchange {exchange.number}", conv)
         reply, spoken, sentences = "", "", 0
@@ -740,7 +805,7 @@ class Assistant:
             tts = await self.tts_socket(conv)
             self.speaker.first_sound = None
             receiver = asyncio.create_task(self.play(tts, exchange, conv))
-            async for delta in self.hermes_stream(text, exchange, conv):
+            async for delta in self.hermes_stream(text, exchange, conv, voice):
                 reply += delta
                 pending = reply[len(spoken):]
                 # the last sentence end outside a wrapping speech tag: TTS gets each tag whole
@@ -821,7 +886,8 @@ class Assistant:
         exchange.sentences += 1
         return 1
 
-    async def hermes_stream(self, text, exchange, conv):
+    async def hermes_stream(self, text, exchange, conv, voice=None):
+        heard = await self.voice_tag(voice, conv)
         if self.args.echo:
             for word in f"Ты сказал: {text}".split(" "):
                 exchange.mark("first_token")
@@ -829,11 +895,14 @@ class Assistant:
             return
         system = self.args.system
         status = self.board.status() if hasattr(self.board, "status") else []
+        if self.voiceid:
+            status = status + [f"voice ID: knows {', '.join(self.voiceid.names[:-1])}, the people who live here; "
+                               "every request is tagged with which of them is speaking, or unknown"]
         if status:
             system += "\n" + "\n".join(status)  # the prompt ends with its "Device status" section
         session = self.session_id or self.hermes_session(conv)
         # only the new request: Hermes takes the history from the session
-        content = "\n".join(self.notes + [text])
+        content = "\n".join(self.notes + [f"{heard.text} {text}" if heard else text])
         self.notes.clear()
         messages = [{"role": "system", "content": system}, {"role": "user", "content": content}]
         body = {"model": self.model, "stream": True, "messages": messages}

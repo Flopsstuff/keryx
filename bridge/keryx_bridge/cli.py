@@ -1,7 +1,7 @@
 """keryx-bridge: run the voice bridge, check its settings, or talk to a running one.
 
   keryx-bridge run [options]     the bridge itself (what the systemd service runs)
-  keryx-bridge check             settings, the system prompt, Hermes and xAI, without a board
+  keryx-bridge check             settings, the system prompt, voice ID, Hermes and xAI, without a board
   keryx-bridge pair [options]    give the board on USB the Wi-Fi, this bridge's address and its token
   keryx-bridge status            what a running bridge on this machine knows about the board
   keryx-bridge volume 60|+10|-10 set the board's volume through a running bridge
@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import getpass
 import json
+import pathlib
 import socket
 import sys
 import time
@@ -25,6 +26,7 @@ import aiohttp
 from . import __version__
 from .server import add_server_arguments, serve
 from .voice import CONFIG, add_arguments, duration, env, finish_arguments, system_prompt
+from .voiceid import VoiceID
 
 
 def run(argv):
@@ -57,6 +59,15 @@ async def check_services():
         report(True, "system prompt", f"{source}, {len(prompt)} chars")
     except SystemExit as e:
         report(False, "system prompt", str(e))
+    folder = pathlib.Path(env("KERYX_VOICEID", "~/.local/share/keryx/voiceid")).expanduser()
+    if why := VoiceID.available(folder):
+        print(f"  --   voice ID off: {why} (voiceid/README.md)")
+    else:
+        try:
+            voiceid = VoiceID(folder)
+            report(True, "voice ID", f"{', '.join(voiceid.names[:-1])} from {folder}")
+        except Exception as e:  # noqa: BLE001 - a broken bundle is a finding, not a crash
+            report(False, "voice ID", f"{folder}: {e!r}")
     hermes = env("HERMES_URL", "http://127.0.0.1:8642/v1")
     async with aiohttp.ClientSession() as session:
         try:
