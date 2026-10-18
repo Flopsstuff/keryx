@@ -435,10 +435,12 @@ static void panel_task(void *arg)
     for (;;) {
         vTaskDelayUntil(&wake, pdMS_TO_TICKS(FRAME_MS));
         int64_t now = esp_timer_get_time();
-        // a ring that stops moving: how long, and in which state, for finding out who held the task back
+        // a ring that stops moving: how long, and in which state, for finding out who held the task back. Not while
+        // an update writes flash: that stops the caches, and with them this task, every few hundred ms
         const int gap_ms = last ? (int)((now - last) / 1000) : 0;
         last = now;
-        if (gap_ms >= STALL_MS) {
+        const bool updating = cb.update_progress != NULL && cb.update_progress() >= 0;
+        if (gap_ms >= STALL_MS && !updating) {
             stalls++;
             stall_max_ms = gap_ms > stall_max_ms ? gap_ms : stall_max_ms;
             ESP_LOGW(TAG, "no frame for %d ms (state %d)", gap_ms, cb.state());
