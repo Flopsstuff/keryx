@@ -16,7 +16,7 @@ import soundfile as sf
 
 from embed import DATA, RATE, wavs
 from profiles import SPEAKERS, WAKE, unit
-from segment import started
+from segment import PAD, started
 
 HERE = Path(__file__).parent
 SEGMENTS = HERE / "data" / "segments"
@@ -45,10 +45,11 @@ def segments(folder, channel):
     return items
 
 
-def load(model, channel="r"):
-    """(items, unit embeddings) for one model, from the cache or computed."""
+def load(model, channel="r", crop=0.0):
+    """(items, unit embeddings) for one model, from the cache or computed; crop > 0 embeds only the first crop s of
+    each utterance (after its leading pad), as the bridge does to keep a slow model quick."""
     items = listing(channel)
-    cache = HERE / "cache" / f"utterances_{model}{'_l' if channel == 'l' else ''}.npz"
+    cache = HERE / "cache" / f"utterances_{model}{'_l' if channel == 'l' else ''}{f'_crop{crop:g}' if crop else ''}.npz"
     if cache.exists():
         stored = np.load(cache, allow_pickle=True)
         if list(stored["paths"]) == [i["path"] for i in items]:
@@ -60,6 +61,8 @@ def load(model, channel="r"):
     embeddings = []
     for item in items:
         audio = sf.read(item["path"], dtype="float32")[0]
+        if crop:
+            audio = audio[:int((PAD + crop + PAD) * RATE)]
         stream = extractor.create_stream()
         stream.accept_waveform(sample_rate=RATE, waveform=audio)
         stream.input_finished()

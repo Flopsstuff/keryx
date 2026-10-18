@@ -178,10 +178,17 @@ def main():
                              "their shares")
     parser.add_argument("--channel", choices=["r", "l"], default="r",
                         help="the beam the utterances are taken from: r the ASR beam, l the processed one (the bridge's)")
+    parser.add_argument("--models", default=",".join(MODELS),
+                        help="comma-separated models, the slow one first (default both)")
+    parser.add_argument("--crop", type=float, default=0.0,
+                        help="embed only the first CROP s of an utterance with the first model, which on a Pi takes "
+                             "about 0.23 s per second of audio (0: all of it)")
     parser.add_argument("--save", action="store_true", help=f"write {HERE / 'profiles' / 'voiceid.npz'}")
     args = parser.parse_args()
 
-    loaded = [load(m, args.channel) for m in MODELS]
+    models = args.models.split(",")
+    crops = [args.crop] + [0.0] * (len(models) - 1)
+    loaded = [load(m, args.channel, c) for m, c in zip(models, crops)]
     items = loaded[0][0]
     cos = np.hstack([cosines(items, e) for _, e in loaded])
     speech = np.array([i["speech"] for i in items])
@@ -189,7 +196,7 @@ def main():
     groups = [f"{i['speaker']}:{i['session']}" for i in items]
     probs = cross_validated(features(cos, speech), y, groups, weights(y, speech))
     print("utterances: " + ", ".join(f"{c} {(y == k).sum()}" for k, c in enumerate(CLASSES)) +
-          f"; models: {', '.join(m.split('_')[2] for m in MODELS)}")
+          f"; models: {', '.join(m.split('_')[2] + (f' (first {c:g} s)' if c else '') for m, c in zip(models, crops))}")
 
     def prior_for(other):
         known = (1 - other) / sum(SHARE.values())
@@ -207,14 +214,14 @@ def main():
         prior = prior_for(args.other[0])
         out = HERE / "profiles" / "voiceid.npz"
         out.parent.mkdir(exist_ok=True)
-        save(out, models=MODELS, channel=args.channel, classes=CLASSES, names=[NAMES[s] for s in SPEAKERS] + ["unknown"],
+        save(out, models=models, crops=crops, channel=args.channel, classes=CLASSES, names=[NAMES[s] for s in SPEAKERS] + ["unknown"],
              profiles=[unit(np.stack([e[y == k].mean(0) for k in range(len(SPEAKERS))])) for _, e in loaded],
              mean=scaler.mean_, scale=scaler.scale_, coef=regression.coef_, intercept=regression.intercept_,
              prior=[prior[c] for c in CLASSES],
              typical=[(similarity(cos[own & (y == k)], k, len(SPEAKERS)), speech[own & (y == k)])
                       for k in range(len(SPEAKERS))])
         print(f"\nsaved {out}: {', '.join(f'{NAMES[s]} {(y == k).sum()}' for k, s in enumerate(SPEAKERS))} utterances; "
-              f"with {', '.join(f'{m}.onnx' for m in MODELS)} from models/ it is what the bridge loads")
+              f"with {', '.join(f'{m}.onnx' for m in models)} from models/ it is what the bridge loads")
 
 if __name__ == "__main__":
     main()

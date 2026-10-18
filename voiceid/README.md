@@ -18,7 +18,9 @@ docs name nobody (the examples use Alex and Sam).
 
 1. **Embedding.** Each utterance becomes a speaker embedding in two pretrained models run with sherpa-onnx on the
    CPU: ERes2NetV2 (Alibaba 3D-Speaker, 17.8M parameters, made for short utterances) and CAM++ (3D-Speaker,
-   6.9M). Neither was trained on Russian; speaker embeddings do not depend much on the language.
+   6.9M). Neither was trained on Russian; speaker embeddings do not depend much on the language. ERes2NetV2 is slow
+   (on a Raspberry Pi 5 about 0.23 s per second of audio, CAM++ 0.035 s), so it hears only the first 2 s of an
+   utterance, trained that way too, and the two run side by side.
 2. **Profiles.** A speaker's profile is the mean of their utterances' unit embeddings, per model.
 3. **One utterance.** The cosines to every profile in both models and the utterance's length go through a
    multinomial logistic regression into a probability per speaker plus "other", multiplied by the prior (each one's
@@ -80,7 +82,7 @@ cd wakeword && .venv/bin/python replay.py ../voiceid/data/tts-impostors --label 
 | `segment.py` | cuts the sessions and the impostor clips into utterances (Silero VAD where both beams hear speech) into `data/segments/`, R and `l/` |
 | `profiles.py` | profiles from everything, checked by leaving each session out |
 | `impostor_check.py` | own utterances against the impostors, by length |
-| `calibrate.py --channel l --save` | the regression, the cap and the conversation, checked on sessions and voices left out; writes `profiles/voiceid.npz` |
+| `calibrate.py --channel l --crop 2 --save` | the regression, the cap and the conversation, checked on sessions and voices left out; writes `profiles/voiceid.npz` (ERes2NetV2 on an utterance's first 2 s, see below) |
 | `install.sh [host]` | the bundle and its two models into `~/.local/share/keryx/voiceid`, here or over ssh; then restart the bridge |
 | `live.py [--save DIR]` | the stand: the board on USB as the microphone, a log line with the tag for every utterance |
 
@@ -91,19 +93,22 @@ recordings by voice once.
 
 Two speakers, one evening in one room, 12 sessions (518 own utterances with the wake word takes) and 28 xAI voices
 replayed through the MacBook (297 utterances); every number is on sessions and voices left out of the profiles and
-the regression, prior 5 % impostors, the processed beam:
+the regression, prior 5 % impostors, the processed beam, ERes2NetV2 on the first 2 s:
 
 | Utterance | own right | own taken for a stranger | the two swapped | stranger taken for one of them |
 |---|---|---|---|---|
 | < 1 s | 98.8 % | 1.2 % | 0 | 33 % (12) |
-| 1–2 s | 99.4 % | 0.6 % | 0 | 14 % |
-| 2–4 s | 99.1 % | 0.9 % | 0 | 8 % |
-| > 4 s | 100 % | 0 | 0 | 3 % |
+| 1–2 s | 99.4 % | 0.6 % | 0 | 17 % |
+| 2–4 s | 100 % | 0 | 0 | 8 % |
+| > 4 s | 100 % | 0 | 0 | 6 % |
 
-In a conversation an impostor is caught on its first utterance 91 % of the time and on the second 100 %; a switch
-from one speaker to the other shows on the first utterance after it 97 % of the time. Tags at 0.7–0.9 come true
+In a conversation an impostor is caught on its first utterance 89 % of the time and on the second 100 %; a switch
+from one speaker to the other shows on the first utterance after it 98 % of the time. ERes2NetV2 on whole
+utterances does about the same (3 % of impostors over 4 s get through instead of 6 %); CAM++ alone lets through
+twice as many impostors (18 % at 2–4 s) and catches one on its first utterance 66 % of the time. Tags at 0.7–0.9 come true
 97 % of the time, at 0.9–0.98 99 %. With a 1 % prior single impostor utterances get through more often (12–75 %);
 with 20 %, own ones are taken for strangers more often (1–6 %).
 
 What these numbers do not cover yet: other days, colds and moods; live strangers (the impostors are synthetic, from
-a laptop speaker); children. On this Mac (i7-8850H) an utterance takes 70–480 ms, the two-speaker check included.
+a laptop speaker); children. On a Raspberry Pi 5 an utterance takes 0.26 s (1 s long), 0.5 s (2 s), 0.7 s (3 s),
+0.8 s (6 s) and 1.1 s (10 s), the two-speaker check included; the request waits for it.

@@ -16,12 +16,15 @@ with a probability that falls with the pause between them (stay()) and is otherw
 short "yes" right after a long request keeps its speaker. The tag mixes that belief with the utterance's own
 probabilities, TRUST of it from the conversation, so an utterance at odds with the conversation shows as doubt.
 A long utterance whose MIX_WINDOW s windows go clearly to two different known speakers is tagged with both.
+A slow model may hear only the first seconds of an utterance (the bundle's crops; calibrate.py trains it that way),
+and the models run side by side, so that on a Raspberry Pi 5 an utterance takes about half a second.
 
 The tag, as the LLM gets it in front of the request: [voice: Alex 0.97], [voice: unknown 0.88], [voice: Alex+Sam 0.80]
 """
 
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,7 +39,7 @@ UNKNOWN_PAUSE = 1.5  # s, when the pause before an utterance is not known
 TRUST = 0.5
 BINS = [0, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 99]  # utterance lengths, s
 MIN_TYPICAL = 20  # fewer own utterances of a length than this: typicality over all lengths
-MIX_MIN, MIX_WINDOW, MIX_HOP, MIX_MARGIN = 3.0, 1.5, 0.75, 0.15  # s, s, s, cosine
+MIX_MIN, MIX_WINDOW, MIX_HOP, MIX_MARGIN = 3.0, 1.5, 1.5, 0.15  # s, s, s, cosine
 
 
 def features(cos, speech):
@@ -92,9 +95,11 @@ def tag(belief, one):
     return k, min(TOP, float(t[k]))
 
 
-def save(path, *, models, channel, classes, names, profiles, mean, scale, coef, intercept, prior, typical):
-    """Writes the bundle VoiceID loads. profiles: (models, speakers, dim); typical: per speaker (sims, lengths)."""
-    np.savez(path, models=np.array(models), channel=np.array(channel), classes=np.array(classes),
+def save(path, *, models, crops, channel, classes, names, profiles, mean, scale, coef, intercept, prior, typical):
+    """Writes the bundle VoiceID loads. crops: per model, the seconds of an utterance it hears (0: all);
+    profiles: (models, speakers, dim); typical: per speaker (sims, lengths)."""
+    np.savez(path, models=np.array(models), crops=np.asarray(crops, float), channel=np.array(channel),
+             classes=np.array(classes),
              names=np.array(names), profiles=np.asarray(profiles, np.float32), mean=mean, scale=scale, coef=coef,
              intercept=intercept, prior=np.asarray(prior, float),
              **{f"typical_sims_{k}": s for k, (s, _) in enumerate(typical)},
@@ -128,6 +133,7 @@ class VoiceID:
         directory = Path(directory)
         b = np.load(directory / "voiceid.npz")
         self.models = [str(m) for m in b["models"]]
+        self.crops = list(b["crops"]) if "crops" in b else [0.0] * len(self.models)
         self.channel = str(b["channel"])
         self.classes = [str(c) for c in b["classes"]]
         self.names = [str(n) for n in b["names"]]
@@ -139,6 +145,7 @@ class VoiceID:
         self.extractors = [sherpa_onnx.SpeakerEmbeddingExtractor(sherpa_onnx.SpeakerEmbeddingExtractorConfig(
             model=str(directory / f"{m}.onnx"), num_threads=threads)) for m in self.models]
         self.lock = threading.Lock()
+        self.pool = ThreadPoolExecutor(len(self.models))  # the models run side by side; onnxruntime frees the GIL
 
     @staticmethod
     def available(directory):
@@ -154,7 +161,7 @@ class VoiceID:
         return f"missing models: {', '.join(missing)}" if missing else None
 
     def embed(self, audio, model=None):
-        """Unit embeddings of 16 kHz float32 audio, one per model (or just the given one)."""
+        """Unit embeddings of 16 kHz float32 audio as it is, one per model (or just the given one)."""
         out = []
         for i in [model] if model is not None else range(len(self.models)):
             stream = self.extractors[i].create_stream()
@@ -164,9 +171,15 @@ class VoiceID:
             out.append(e / np.linalg.norm(e))
         return out
 
-    def cosines(self, audio):
-        """(models × speakers,) cosines of the audio to every profile."""
-        return np.concatenate([p @ e for p, e in zip(self.profiles, self.embed(audio))])
+    def cosines(self, audio, also=None):
+        """(models × speakers,) cosines of the audio to every profile, each model in a thread of its own; also: a
+        function of the audio to run in the last model's thread after it (the two-speaker check, on that model)."""
+        def one(i):
+            e = self.embed(audio[:int((PAD + self.crops[i] + PAD) * RATE)] if self.crops[i] else audio, i)[0]
+            return self.profiles[i] @ e, (also(audio) if also and i == len(self.models) - 1 else None)
+
+        results = list(self.pool.map(one, range(len(self.models))))
+        return np.concatenate([c for c, _ in results]), results[-1][1]
 
     def utterance(self, cos, speech):
         """This utterance's probabilities under the prior, capped by typicality."""
@@ -208,10 +221,9 @@ class Tracker:
         t0 = time.monotonic()
         vid = self.vid
         with vid.lock:
-            cos = vid.cosines(audio)
+            cos, both = vid.cosines(audio, also=vid.mixed)
             speech = end - start
             one = vid.utterance(cos, speech)
-            both = vid.mixed(audio)
         with self.lock:
             pause = None if self.last_end is None else start - self.last_end
             self.belief = step(self.belief, one, vid.prior, pause)
