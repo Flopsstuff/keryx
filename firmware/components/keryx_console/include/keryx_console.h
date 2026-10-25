@@ -7,7 +7,13 @@
  *   reboot      restart the firmware
  *   top [seconds]  how busy each core was and which tasks took the time (default 5 s)
  *   log <tag|*> <none|error|warn|info|debug|verbose>   change a log level until the next restart
+ *   log recent  the end of the journal
+ *   log saved [clear]  the journal saved in NVS (keryx_console_journal_save), or forget it
  * Output is dropped while no host has the port open (DTR low), so writing never stalls the audio.
+ *
+ * Everything written but the periodic report also goes into a journal of the recent lines in PSRAM, each with the time
+ * it began (the time of day once SNTP has set it, until then `+<seconds since boot>s`). Its end can be saved in NVS,
+ * to be read after a restart or a power cut: a board that lost the bridge has nobody to tell why until it is back.
  */
 #pragma once
 
@@ -31,3 +37,12 @@ bool keryx_console_submit(int id, const char *line, keryx_console_done_fn done);
 
 // Writes a line (or part of one) to the host, as printf.
 void keryx_console_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+// The same, but not into the journal: for the periodic report, which would push everything else out of it.
+void keryx_console_report(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+// Saves the journal's end (2.7 KB) in NVS, over a saved one of this run; ESP_ERR_INVALID_STATE if one of an earlier
+// run is there and not yet cleared, as that one saw the trouble begin. Writes flash: the stack must be internal.
+esp_err_t keryx_console_journal_save(void);
+// A saved journal is waiting to be read (`log saved`) and cleared (`log saved clear`).
+bool keryx_console_journal_saved(void);
+// A USB host has the board: it is on the bench, not in the speaker.
+bool keryx_console_host(void);

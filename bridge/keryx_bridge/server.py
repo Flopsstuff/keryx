@@ -3,7 +3,9 @@
 The board connects to ws://<host>:8765/keryx and keeps the connection (protocol v1, agreed with the firmware):
 
 board → bridge
-  {"type":"hello","id":"keryx-a1b2c3","token":"…","firmware":"…"}   first message; a wrong token closes with 4001
+  {"type":"hello","id":"keryx-a1b2c3","token":"…","firmware":"…"}   first message; a wrong token closes with 4001;
+                                                   "saved_log":true when the board saved its journal while it had no
+                                                   bridge: read here with `log saved`, logged, then cleared
   {"type":"wake","score":0.97,"preroll_ms":500}   then 16 kHz mono PCM16 frames of 20 ms: preroll_ms of audio from
                                                    before the wake, then live, until listen_stop; a wake during a
                                                    running stream comes with preroll_ms 0 and no extra audio
@@ -296,6 +298,7 @@ class Bridge:
         self.assistant = Assistant(args, self.mic, self.speaker, self.link, session)
         self.say_lock = asyncio.Lock()
         self.unmute_task = None
+        self.saved_log_task = None  # a reference, so that the task is not collected while it runs
 
     def status(self):
         if self.link.ws is None:
@@ -337,6 +340,8 @@ class Bridge:
         log(f"board {self.link.id} ready: firmware {hello.get('firmware', '?')!r}, volume {self.link.volume}, "
             f"muted {self.link.muted}, from {peer}")
         self.resume_timed_mute()
+        if hello.get("saved_log"):
+            self.saved_log_task = asyncio.create_task(self.fetch_saved_log())
         try:
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.BINARY:
@@ -434,6 +439,16 @@ class Bridge:
             self.unmute_task, self.link.muted_until = None, None  # unmuted some other way meanwhile
         elif self.link.muted_until is not None and self.unmute_task is None:
             self.unmute_task = asyncio.create_task(self.unmute_after(max(0.0, self.link.muted_until - time.time())))
+
+    async def fetch_saved_log(self):
+        """The journal the board saved while it could not reach the bridge: into our log, then off the board."""
+        output = await self.link.console("log saved")
+        if output is None:
+            return
+        for line in output.splitlines():
+            if line and line != "ok":
+                log(f"board saved log: {line}")
+        await self.link.console("log saved clear")
 
     async def http_console(self, request):
         """POST {"line": "…"}: runs it on the board's console; answers with what it printed and whether it was ok."""

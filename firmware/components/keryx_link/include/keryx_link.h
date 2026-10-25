@@ -1,7 +1,8 @@
 /*
  * The link to the voice bridge: a WebSocket client that stays connected and speaks protocol v1 (firmware/README.md):
  *
- *   board -> bridge   {"type":"hello",…,"volume":…,"muted":…}, {"type":"wake","score":…,"preroll_ms":…}, {"type":"played"},
+ *   board -> bridge   {"type":"hello",…,"volume":…,"muted":…} (and "saved_log":true when a journal is saved),
+ *                     {"type":"wake","score":…,"preroll_ms":…}, {"type":"played"},
  *                     {"type":"volume","value":0..100}, {"type":"mute","value":bool} (after every change,
  *                     whoever made it, and when asked), {"type":"stop"} (end the conversation: the stop button),
  *                     {"type":"console","id":…,"output":…} (what a console line printed),
@@ -52,6 +53,8 @@ void keryx_link_console_reply(int id, const char *output);
 
 // Connected to the bridge, past hello.
 bool keryx_link_ready(void);
+// A bridge is set: the link connects, or keeps trying.
+bool keryx_link_configured(void);
 
 // The microphone streams to the bridge: from a wake until listen_stop, i.e. the whole conversation.
 bool keryx_link_streaming(void);

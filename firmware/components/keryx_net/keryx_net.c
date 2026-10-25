@@ -113,6 +113,18 @@ static const char *reason_name(int reason)
     }
 }
 
+// A connect that fails at once sends no disconnect event: without a retry of our own nothing would try again.
+static void connect_or_retry(void)
+{
+    esp_err_t err = esp_wifi_connect();
+    if (err != ESP_OK) {
+        keryx_console_printf("wifi connect failed: %s, retry_in=%ds\n", esp_err_to_name(err), retry_s);
+        esp_timer_stop(retry_timer);
+        esp_timer_start_once(retry_timer, retry_s * 1000000LL);
+        retry_s = retry_s * 2 > RETRY_MAX_S ? RETRY_MAX_S : retry_s * 2;
+    }
+}
+
 // Applies the stored Wi-Fi settings: leaves the current network and joins the configured one, if any.
 static void wifi_apply(void)
 {
@@ -136,12 +148,12 @@ static void wifi_apply(void)
     cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
     cfg.sta.pmf_cfg.capable = true;
     esp_wifi_set_config(WIFI_IF_STA, &cfg);
-    esp_wifi_connect();
+    connect_or_retry();
 }
 
 static void retry_connect(void *arg)
 {
-    esp_wifi_connect();
+    connect_or_retry();
 }
 
 static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -160,8 +172,15 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
         }
         keryx_console_printf("wifi disconnected reason=%s (%d) retry_in=%ds\n", reason_name(event->reason),
                              event->reason, retry_s);
+        esp_timer_stop(retry_timer);
         esp_timer_start_once(retry_timer, retry_s * 1000000LL);
         retry_s = retry_s * 2 > RETRY_MAX_S ? RETRY_MAX_S : retry_s * 2;
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
+        const wifi_event_sta_connected_t *event = data;
+        keryx_console_printf("wifi associated ch=%d, waiting for an address\n", event->channel);
+    } else if (base == IP_EVENT && id == IP_EVENT_STA_LOST_IP) {
+        connected = false;
+        keryx_console_printf("wifi lost its address\n");
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         const ip_event_got_ip_t *event = data;
         connected = true;
@@ -213,6 +232,7 @@ static esp_err_t net_start(void)
     CHECK(esp_timer_create(&timer, &retry_timer), "timer");
     CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi_event, NULL), "wifi events");
     CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_wifi_event, NULL), "ip events");
+    CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_LOST_IP, on_wifi_event, NULL), "ip events");
     started = true;
     CHECK(esp_wifi_start(), "wifi start");  // STA_START then joins the stored network, if any
     return ESP_OK;
@@ -226,6 +246,19 @@ esp_err_t keryx_net_start(void)
         snprintf(start_error, sizeof(start_error), "%s", esp_err_to_name(err));
     }
     return err;
+}
+
+void keryx_net_restart(void)
+{
+    if (!started) {
+        return;
+    }
+    esp_timer_stop(retry_timer);
+    esp_err_t err = esp_wifi_stop();
+    if (err == ESP_OK) {
+        err = esp_wifi_start();  // STA_START joins the stored network again
+    }
+    keryx_console_printf("wifi restarted: %s\n", esp_err_to_name(err));
 }
 
 static bool is_secret(const char *key)

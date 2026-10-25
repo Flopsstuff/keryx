@@ -35,6 +35,7 @@
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_netif_sntp.h"
@@ -705,17 +706,21 @@ static void capture_task(void *arg)
         if (now - last_report >= REPORT_MS * 1000LL) {
             bool recording = now - last_mic_read_us < 100000;
             bool playing = now - last_playback_us < PLAYBACK_IDLE_MS * 1000LL;
-            ESP_LOGI(TAG, "peak score %.3f | ASR peak %.1f dBFS | %.2f ms per 5 ms | USB mic %s, lag %u ms, "
-                          "dropped %u ms, short reads %u, overruns %u | USB speaker %s, queued %u ms, "
-                          "underruns %u, overflows %u, dropped %u ms, rate %u Hz | I2S late %u", peak_score,
-                     20.0f * log10f((peak_level + 1) / 32768.0f), busy_us / 1000.0f / blocks,
-                     recording ? "on" : "off", (unsigned)(xStreamBufferBytesAvailable(mic_buffer) / MS_BYTES),
-                     (unsigned)(mic_dropped_bytes / MS_BYTES), (unsigned)mic_short_reads,
-                     (unsigned)capture_overruns, playing ? "on" : "off",
-                     (unsigned)(xStreamBufferBytesAvailable(play_buffer) / MS_BYTES), (unsigned)play_underruns,
-                     (unsigned)play_overflows, (unsigned)(play_dropped_bytes / MS_BYTES),
-                     (unsigned)((uint64_t)play_received_bytes * 1000000 / FRAME_BYTES / (now - last_report)),
-                     (unsigned)i2s_tx_late);
+            keryx_console_report("I (%lu) %s: peak score %.3f | ASR peak %.1f dBFS | %.2f ms per 5 ms | USB mic %s, "
+                                 "lag %u ms, dropped %u ms, short reads %u, overruns %u | USB speaker %s, queued %u "
+                                 "ms, underruns %u, overflows %u, dropped %u ms, rate %u Hz | I2S late %u\n",
+                                 (unsigned long)esp_log_timestamp(), TAG, peak_score,
+                                 20.0f * log10f((peak_level + 1) / 32768.0f), busy_us / 1000.0f / blocks,
+                                 recording ? "on" : "off",
+                                 (unsigned)(xStreamBufferBytesAvailable(mic_buffer) / MS_BYTES),
+                                 (unsigned)(mic_dropped_bytes / MS_BYTES), (unsigned)mic_short_reads,
+                                 (unsigned)capture_overruns, playing ? "on" : "off",
+                                 (unsigned)(xStreamBufferBytesAvailable(play_buffer) / MS_BYTES),
+                                 (unsigned)play_underruns, (unsigned)play_overflows,
+                                 (unsigned)(play_dropped_bytes / MS_BYTES),
+                                 (unsigned)((uint64_t)play_received_bytes * 1000000 / FRAME_BYTES /
+                                            (now - last_report)),
+                                 (unsigned)i2s_tx_late);
             last_report = now;
             busy_us = 0;
             blocks = 0;
@@ -723,7 +728,7 @@ static void capture_task(void *arg)
             peak_score = 0.0f;
             static char link_line[160];
             keryx_link_report(link_line, sizeof(link_line));
-            ESP_LOGI(TAG, "%s", link_line);
+            keryx_console_report("I (%lu) %s: %s\n", (unsigned long)esp_log_timestamp(), TAG, link_line);
             mic_dropped_bytes = mic_short_reads = capture_overruns = 0;
             play_underruns = play_overflows = play_dropped_bytes = i2s_tx_late = play_received_bytes = 0;
         }
@@ -1329,6 +1334,85 @@ static int panel_mic_level(void)
     return mic_peak;
 }
 
+// Recovery: a board that has lost the bridge saves its journal, so that the bridge hears why once it is back, and
+// gets itself back: Wi-Fi restarted, then the whole board. It once stayed off Wi-Fi for eight hours, until it was
+// powered off, which left nothing to say why. Not on the bench (a USB host has it) nor during an update.
+#define OFFLINE_SAVE_S 180           // this long without the bridge: the journal goes to NVS, Wi-Fi restarts
+#define OFFLINE_RESTART_S 600        // and this long: the board restarts
+#define OFFLINE_RESTART_AGAIN_S 3600 // after a restart of ours that brought no bridge, the next one
+#define WATCHDOG_CHECK_MS 5000
+#define WATCHDOG_MAGIC 0x6b727978
+RTC_NOINIT_ATTR static uint32_t watchdog_magic, watchdog_restarts;  // survive esp_restart, not a power cut
+static int64_t online_us;          // the bridge was last there (or the watch began)
+static bool offline_saved;         // this outage's first step is done
+static volatile bool recovering;   // a recovery task runs
+
+// In a task of its own with an internal stack: it writes flash, and stopping Wi-Fi from the esp_timer task, whose
+// timers the driver uses, could wait forever.
+static void recover_task(void *arg)
+{
+    const bool restart = arg != NULL;
+    esp_err_t err = keryx_console_journal_save();
+    keryx_console_printf("watchdog: journal %s\n", err == ESP_OK ? "saved" : err == ESP_ERR_INVALID_STATE
+                         ? "not saved, an earlier one is waiting" : esp_err_to_name(err));
+    if (restart) {
+        watchdog_magic = WATCHDOG_MAGIC;
+        watchdog_restarts++;
+        vTaskDelay(pdMS_TO_TICKS(100));
+        esp_restart();
+    }
+    keryx_net_restart();
+    recovering = false;
+    vTaskDelete(NULL);
+}
+
+static void watchdog_check(void *arg)
+{
+    const int64_t now = esp_timer_get_time();
+    if (keryx_link_ready() || !keryx_link_configured() || keryx_console_host() || keryx_ota_progress() >= 0) {
+        if (keryx_link_ready() && watchdog_restarts > 0) {
+            keryx_console_printf("watchdog: bridge back after %lu restart(s)\n", (unsigned long)watchdog_restarts);
+            watchdog_restarts = 0;
+        }
+        online_us = now;
+        offline_saved = false;
+        return;
+    }
+    const int offline_s = (int)((now - online_us) / 1000000);
+    const int restart_s = watchdog_restarts > 0 ? OFFLINE_RESTART_AGAIN_S : OFFLINE_RESTART_S;
+    const bool restart = offline_s >= restart_s;
+    if (recovering || (!restart && (offline_saved || offline_s < OFFLINE_SAVE_S))) {
+        return;
+    }
+    keryx_console_printf("watchdog: no bridge for %d s, Wi-Fi %s: %s\n", offline_s,
+                         keryx_net_connected() ? "connected" : "not connected",
+                         restart ? "restarting the board" : "saving the journal, restarting Wi-Fi");
+    offline_saved = true;
+    recovering = true;
+    if (xTaskCreatePinnedToCore(recover_task, "recover", 4096, restart ? (void *)1 : NULL, 3, NULL, 0) != pdPASS) {
+        keryx_console_printf("watchdog: no memory for the recovery task\n");
+        recovering = false;
+    }
+}
+
+static void watchdog_start(void)
+{
+    if (watchdog_magic != WATCHDOG_MAGIC || esp_reset_reason() != ESP_RST_SW) {
+        watchdog_magic = WATCHDOG_MAGIC;
+        watchdog_restarts = 0;
+    } else if (watchdog_restarts > 0) {
+        keryx_console_printf("watchdog: restarted the board without a bridge (%lu)\n",
+                             (unsigned long)watchdog_restarts);
+    }
+    online_us = esp_timer_get_time();
+    esp_timer_handle_t timer;
+    const esp_timer_create_args_t args = {.callback = watchdog_check, .name = "watchdog"};
+    if (esp_timer_create(&args, &timer) != ESP_OK || esp_timer_start_periodic(timer, WATCHDOG_CHECK_MS * 1000LL)
+                                                         != ESP_OK) {
+        ESP_LOGE(TAG, "the bridge watchdog did not start");
+    }
+}
+
 void app_main(void)
 {
     // Until I2S takes over, the playback line floats while the XVF3800 keeps clocking the bus, and the codec plays
@@ -1337,6 +1421,9 @@ void app_main(void)
     gpio_config_t dout_cfg = {.pin_bit_mask = 1ULL << PIN_I2S_DOUT, .mode = GPIO_MODE_OUTPUT};
     gpio_config(&dout_cfg);
     gpio_set_level(PIN_I2S_DOUT, 0);
+    // before the console starts the journal: the clock survives a restart, so its first lines already have a time
+    setenv("TZ", CLOCK_TZ, 1);
+    tzset();
 
     // the volume and, above all, the mute apply from the first captured block
     esp_err_t nvs_err = nvs_flash_init();
@@ -1387,8 +1474,6 @@ void app_main(void)
     }
     keryx_net_status_hook(status_xvf);
     // the clock on the ring: SNTP keeps trying until Wi-Fi is up, then every hour
-    setenv("TZ", CLOCK_TZ, 1);
-    tzset();
     esp_sntp_config_t sntp = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
     sntp.wait_for_sync = false;
     if (esp_netif_sntp_init(&sntp) != ESP_OK) {
@@ -1401,6 +1486,7 @@ void app_main(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "bridge link did not start: %s", esp_err_to_name(err));
     }
+    watchdog_start();
     if (periph_bus != NULL) {
         const keryx_panel_callbacks_t panel_callbacks = {.turned = panel_turned, .pressed = panel_pressed,
                                                          .long_pressed = panel_long_pressed, .state = panel_state,

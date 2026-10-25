@@ -4,8 +4,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -14,6 +16,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "hal/usb_serial_jtag_ll.h"
+#include "nvs.h"
 #include "soc/rtc_cntl_reg.h"
 #include "tusb.h"
 
@@ -26,6 +29,9 @@ static const char *TAG = "console";
 #define REMOTE_LINE_MAX 128
 #define REMOTE_OUTPUT_MAX 3072
 #define REMOTE_QUEUE 2
+#define JOURNAL_SIZE 8192        // the recent lines, in PSRAM
+#define JOURNAL_TAIL 2700        // what `log recent` shows and the saved journal keeps: one answer over Wi-Fi
+#define NVS_NAMESPACE "keryx"
 
 typedef struct {
     int id;
@@ -42,6 +48,13 @@ static QueueHandle_t remote_queue;
 static char *capture;
 static size_t capture_len;
 static volatile bool capturing;
+// the journal: every line but the periodic report, each with the time it began
+static char *journal;
+static size_t journal_written;  // bytes ever written
+static bool journal_line_start = true;
+static portMUX_TYPE journal_lock = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t boot_id;      // tells this run's saved journal from an earlier one's
+static bool journal_saved;    // one is in NVS; kept here, as flash cannot be read from tasks with stacks in PSRAM
 
 static void write_bytes(const char *data, size_t len)
 {
@@ -54,20 +67,89 @@ static void write_bytes(const char *data, size_t len)
     xSemaphoreGive(write_lock);
 }
 
-static void write_vprintf(const char *fmt, va_list args)
+static void journal_put(const char *data, size_t len)
+{
+    while (len > 0) {
+        size_t at = journal_written % JOURNAL_SIZE, n = JOURNAL_SIZE - at < len ? JOURNAL_SIZE - at : len;
+        memcpy(journal + at, data, n);
+        journal_written += n;
+        data += n;
+        len -= n;
+    }
+}
+
+static void journal_append(const char *text, size_t len)
+{
+    // the time of day once SNTP has set it, until then the seconds since boot
+    char stamp[24];
+    time_t now = time(NULL);
+    struct tm tm;
+    if (now > 1700000000 && localtime_r(&now, &tm) != NULL) {
+        strftime(stamp, sizeof(stamp), "%H:%M:%S ", &tm);
+    } else {
+        snprintf(stamp, sizeof(stamp), "+%llds ", esp_timer_get_time() / 1000000);
+    }
+    taskENTER_CRITICAL(&journal_lock);
+    while (len > 0) {
+        if (journal_line_start) {
+            journal_put(stamp, strlen(stamp));
+        }
+        const char *newline = memchr(text, '\n', len);
+        size_t n = newline != NULL ? (size_t)(newline - text) + 1 : len;
+        journal_put(text, n);
+        journal_line_start = newline != NULL;
+        text += n;
+        len -= n;
+    }
+    taskEXIT_CRITICAL(&journal_lock);
+}
+
+// The journal's last bytes, from the start of a line, into buf; returns their length.
+static size_t journal_tail(char *buf, size_t size)
+{
+    taskENTER_CRITICAL(&journal_lock);
+    size_t len = journal_written < JOURNAL_SIZE ? journal_written : JOURNAL_SIZE;
+    len = len < size - 1 ? len : size - 1;
+    for (size_t i = 0; i < len; i++) {
+        buf[i] = journal[(journal_written - len + i) % JOURNAL_SIZE];
+    }
+    bool whole = len == journal_written;
+    taskEXIT_CRITICAL(&journal_lock);
+    buf[len] = '\0';
+    char *first = whole ? buf : strchr(buf, '\n');
+    if (first == NULL) {
+        return 0;
+    }
+    if (first != buf) {
+        len -= first + 1 - buf;
+        memmove(buf, first + 1, len + 1);
+    }
+    return len;
+}
+
+// To the host, into a running capture and, if `journaled`, into the journal.
+static void emit(const char *text, size_t len, bool journaled)
+{
+    write_bytes(text, len);
+    if (capturing && xTaskGetCurrentTaskHandle() == console_task_handle) {
+        size_t room = REMOTE_OUTPUT_MAX - 1 - capture_len;
+        size_t take = len < room ? len : room;
+        memcpy(capture + capture_len, text, take);
+        capture_len += take;
+        capture[capture_len] = '\0';
+    }
+    if (journaled && journal != NULL) {
+        journal_append(text, len);
+    }
+}
+
+static void write_vprintf(const char *fmt, va_list args, bool journaled)
 {
     char line[LOG_LINE_MAX];
     int n = vsnprintf(line, sizeof(line), fmt, args);
     if (n > 0) {
         n = n < (int)sizeof(line) ? n : (int)sizeof(line) - 1;
-        write_bytes(line, n);
-        if (capturing && xTaskGetCurrentTaskHandle() == console_task_handle) {
-            size_t room = REMOTE_OUTPUT_MAX - 1 - capture_len;
-            size_t take = (size_t)n < room ? (size_t)n : room;
-            memcpy(capture + capture_len, line, take);
-            capture_len += take;
-            capture[capture_len] = '\0';
-        }
+        emit(line, n, journaled);
     }
 }
 
@@ -75,13 +157,21 @@ void keryx_console_printf(const char *fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
-    write_vprintf(fmt, args);
+    write_vprintf(fmt, args, true);
+    va_end(args);
+}
+
+void keryx_console_report(const char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    write_vprintf(fmt, args, false);
     va_end(args);
 }
 
 static int log_vprintf(const char *fmt, va_list args)
 {
-    write_vprintf(fmt, args);
+    write_vprintf(fmt, args, true);
     return 0;
 }
 
@@ -170,6 +260,99 @@ static void show_top(int seconds)
     free(after);
 }
 
+esp_err_t keryx_console_journal_save(void)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        return err;
+    }
+    uint32_t saved_by = 0;
+    if (journal_saved && nvs_get_u32(nvs, "journal_boot", &saved_by) == ESP_OK && saved_by != boot_id) {
+        nvs_close(nvs);
+        return ESP_ERR_INVALID_STATE;  // an earlier run's, not yet read: it saw the trouble begin
+    }
+    char *text = heap_caps_malloc(JOURNAL_TAIL + 64, MALLOC_CAP_SPIRAM);
+    if (text == NULL) {
+        nvs_close(nvs);
+        return ESP_ERR_NO_MEM;
+    }
+    time_t now = time(NULL);
+    struct tm tm;
+    int n = now > 1700000000 && localtime_r(&now, &tm) != NULL
+                ? (int)strftime(text, 32, "saved %Y-%m-%d %H:%M:%S", &tm)
+                : snprintf(text, 32, "saved");
+    n += snprintf(text + n, 32, ", up %lld s\n", esp_timer_get_time() / 1000000);
+    n += journal_tail(text + n, JOURNAL_TAIL + 64 - n);
+    err = nvs_set_blob(nvs, "journal", text, n);
+    if (err == ESP_OK) {
+        err = nvs_set_u32(nvs, "journal_boot", boot_id);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs);
+    }
+    nvs_close(nvs);
+    free(text);
+    if (err == ESP_OK) {
+        journal_saved = true;
+    }
+    return err;
+}
+
+bool keryx_console_journal_saved(void)
+{
+    return journal_saved;
+}
+
+bool keryx_console_host(void)
+{
+    return tud_mounted();
+}
+
+// "log recent", "log saved", "log saved clear"
+static void journal_command(const char *what)
+{
+    char *text = heap_caps_malloc(JOURNAL_TAIL + 64, MALLOC_CAP_SPIRAM);
+    if (text == NULL) {
+        keryx_console_printf("error out of memory\n");
+        return;
+    }
+    nvs_handle_t nvs;
+    if (strcmp(what, "recent") == 0) {
+        emit(text, journal_tail(text, JOURNAL_TAIL + 1), false);
+        keryx_console_printf("ok\n");
+    } else if (strcmp(what, "saved") == 0) {
+        size_t len = JOURNAL_TAIL + 63;
+        if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
+            if (nvs_get_blob(nvs, "journal", text, &len) != ESP_OK) {
+                len = 0;
+            }
+            nvs_close(nvs);
+        } else {
+            len = 0;
+        }
+        emit(text, len, false);
+        keryx_console_printf(len > 0 ? "ok\n" : "ok nothing saved\n");
+    } else if (strcmp(what, "saved clear") == 0) {
+        esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+        if (err == ESP_OK) {
+            nvs_erase_key(nvs, "journal");
+            nvs_erase_key(nvs, "journal_boot");
+            err = nvs_commit(nvs);
+            nvs_close(nvs);
+        }
+        if (err == ESP_OK) {
+            journal_saved = false;
+            keryx_console_printf("ok saved journal cleared\n");
+        } else {
+            keryx_console_printf("error %s\n", esp_err_to_name(err));
+        }
+    } else {
+        keryx_console_printf("error usage: log recent | log saved [clear]\n");
+    }
+    free(text);
+}
+
 static void run_command(const char *cmd)
 {
     if (strcmp(cmd, "bootloader") == 0) {
@@ -181,6 +364,8 @@ static void run_command(const char *cmd)
     } else if (strcmp(cmd, "top") == 0 || strncmp(cmd, "top ", 4) == 0) {
         int seconds = cmd[3] ? atoi(cmd + 4) : 5;
         show_top(seconds > 0 && seconds <= 60 ? seconds : 5);
+    } else if (strcmp(cmd, "log recent") == 0 || strncmp(cmd, "log saved", 9) == 0) {
+        journal_command(cmd + 4);
     } else if (strncmp(cmd, "log ", 4) == 0) {
         set_log_level(cmd + 4);
     } else if (cmd[0] != '\0' && (app_command == NULL || !app_command(cmd))) {
@@ -238,8 +423,16 @@ esp_err_t keryx_console_start(const char *banner, keryx_console_command_fn comma
     write_lock = xSemaphoreCreateMutex();
     remote_queue = xQueueCreate(REMOTE_QUEUE, sizeof(remote_t));
     capture = heap_caps_malloc(REMOTE_OUTPUT_MAX, MALLOC_CAP_SPIRAM);
-    if (write_lock == NULL || remote_queue == NULL || capture == NULL) {
+    journal = heap_caps_malloc(JOURNAL_SIZE, MALLOC_CAP_SPIRAM);
+    if (write_lock == NULL || remote_queue == NULL || capture == NULL || journal == NULL) {
         return ESP_ERR_NO_MEM;
+    }
+    boot_id = esp_random();
+    nvs_handle_t nvs;
+    size_t len = 0;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
+        journal_saved = nvs_get_blob(nvs, "journal", NULL, &len) == ESP_OK && len > 0;
+        nvs_close(nvs);
     }
     if (xTaskCreatePinnedToCore(console_task, "console", CONSOLE_STACK, NULL, 2, &console_task_handle, 0) != pdPASS) {
         return ESP_ERR_NO_MEM;

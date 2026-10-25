@@ -11,7 +11,8 @@
  *   status                 board id, firmware version, Wi-Fi state, bridge
  *   net check <host> <port>  open a TCP connection there and close it: is the bridge reachable from this network?
  * Every answer ends with a line starting with `ok` or `error`. Wi-Fi changes come as their own lines:
- * `wifi connected ip=… rssi=…`, `wifi disconnected reason=… retry_in=…s`.
+ * `wifi associated ch=…`, `wifi connected ip=… rssi=…`, `wifi disconnected reason=… retry_in=…s`,
+ * `wifi lost its address`, `wifi connect failed: … retry_in=…s`.
  */
 #pragma once
 
@@ -33,6 +34,9 @@ const char *keryx_net_id(void);
 bool keryx_net_bridge(char *url, size_t url_size, char *token, size_t token_size);
 
 bool keryx_net_connected(void);
+// Stops and starts the Wi-Fi driver, which then joins the stored network again: for a station that stays off it.
+// Blocks while the driver stops; not from the esp_timer task, whose timers the driver uses.
+void keryx_net_restart(void);
 
 // Adds the application's own lines to `status`, before its final `ok`.
 void keryx_net_status_hook(void (*print)(void));

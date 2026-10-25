@@ -101,8 +101,9 @@ predecessors.
 - Pairing, through the same serial port (`components/keryx_net`): `set ssid|password|bridge|token <value>`,
   `config`, `erase`, `wifi scan`, `status`, `net check <host> <port>` (can the board open a TCP connection there:
   is the bridge reachable from this network?); answers end with an `ok` or `error` line. The settings live in NVS and
-  survive flashing; the board joins Wi-Fi at start-up and after `set password`, retries with back-off (1 to 30 s)
-  and reports `wifi connected ip=… rssi=…` / `wifi disconnected reason=…`. `status` also shows the XVF3800
+  survive flashing; the board joins Wi-Fi at start-up and after `set password`, retries with back-off (1 to 30 s),
+  also when a connect fails at once (which sends no disconnect event), and reports `wifi associated ch=…`, `wifi
+  connected ip=… rssi=…`, `wifi disconnected reason=…`, `wifi lost its address`. `status` also shows the XVF3800
   (`xvf=ok version=… i2s=running`, see Installing), the volume, the board's id (`keryx-` and the end of its MAC,
   also its USB serial number, so each board has its own port name), the firmware version (the last commit that
   touched `firmware/`, outside `release/`) and free memory. The XIAO needs its U.FL antenna: without it networks show at about −92 dBm.
@@ -128,6 +129,13 @@ predecessors.
   ~260 ms) goes off at a wake or a `play_start` (the bridge may speak first, with no wake) and back on 5 s after
   the stream and the playback have ended. The report adds a line for the link: state,
   frames up, bytes down, playback underruns.
+- The watchdog (`main.c`): without the bridge for 3 min the board saves the end of its journal in NVS and restarts
+  Wi-Fi (`keryx_net_restart`); after 10 min it saves it again and restarts, and if that brought no bridge either,
+  restarts again every hour. Not while a USB host has the board (the bench, `converse.py`) or an update runs. With a
+  saved journal the board's `hello` says `"saved_log":true`, and the bridge reads it (`log saved`) into its own log as
+  `board saved log: …` lines, then clears it (`log saved clear`). A saved journal of an earlier run is kept until then,
+  as that one saw the trouble begin. It began when a board stayed off Wi-Fi for eight hours, until it was powered off,
+  with nothing left to say why.
 - Volume: the board's own, 0–100 over everything it plays (the bridge's answers, its sounds, USB audio): 0 is silence,
   then 0.5 dB a step up to 0 dB at 100, kept in NVS (saved 2 s after the last change). It is the TLV320AIC3104 codec's
   analog volume in front of its output drivers (page 0, Table 10-51, soft-stepped by the codec): the DAC's hiss comes
@@ -163,6 +171,10 @@ predecessors.
 - More console commands: `wake` acts as if the wake word fired (to test the bridge without saying it), and
   `log <tag|*> <none|error|warn|info|debug>` changes a log level until the next restart (the WebSocket library's
   own log is off: it reports every failed attempt while the bridge is down).
+- The journal (`components/keryx_console`): every line the console prints, except the 5 s report, also goes into 8 KB
+  in PSRAM, each with the time it began (`HH:MM:SS` once SNTP has set the clock, `+<s since boot>s` before). `log
+  recent` shows its last 2.7 KB, also over Wi-Fi; `log saved` the end the watchdog saved in NVS, `log saved clear`
+  forgets it.
 - Tasks: core 1 has capture (wake word, priority 6), playback (7) and the panel (3); core 0 USB, Wi-Fi, lwIP, the
   WebSocket client and the console. USB audio runs at priority 20, above lwIP (18): at 5 it starved during Wi-Fi
   traffic and dropped audio. The panel was on core 0 too, until an answer's audio, which the bridge sends faster than
@@ -205,7 +217,7 @@ are PCM16 little-endian mono.
 
 | Direction | Message | Meaning |
 |---|---|---|
-| board → bridge | `{"type":"hello","id":…,"token":…,"firmware":…,"volume":…,"muted":…}` | first message; a wrong token: close with 4001 |
+| board → bridge | `{"type":"hello","id":…,"token":…,"firmware":…,"volume":…,"muted":…}` | first message; a wrong token: close with 4001. With `"saved_log":true` the board saved its journal while it had no bridge: the bridge reads it with the console line `log saved`, then `log saved clear` |
 | bridge → board | `{"type":"ready"}` | accepted |
 | board → bridge | `{"type":"wake","score":0.97,"preroll_ms":500}` | the wake word fired; audio follows |
 | board → bridge | binary, 16 kHz, 20 ms (640 bytes) | the ASR beam: `preroll_ms` from before the wake, then live, until `listen_stop`. A wake during a stream sends `preroll_ms: 0` and the stream goes on unbroken |

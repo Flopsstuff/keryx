@@ -272,6 +272,9 @@ static void send_hello(void)
     if (callbacks.get_muted != NULL) {
         cJSON_AddBoolToObject(msg, "muted", callbacks.get_muted());
     }
+    if (keryx_console_journal_saved()) {
+        cJSON_AddTrueToObject(msg, "saved_log");  // the bridge reads it with `log saved`, then clears it
+    }
     send_json(msg);
 }
 
@@ -540,6 +543,11 @@ void keryx_link_stop(void)
 bool keryx_link_ready(void)
 {
     return state == LINK_READY;
+}
+
+bool keryx_link_configured(void)
+{
+    return state != LINK_OFF;
 }
 
 bool keryx_link_streaming(void)
