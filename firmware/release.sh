@@ -15,6 +15,13 @@ fi
 
 . "${IDF_PATH:-$HOME/esp/esp-idf}/export.sh" > /dev/null 2>&1
 cd "$here/keryx"
+# a build directory configured by a cmake that is gone (a Homebrew upgrade removes the old Cellar path) cannot
+# reconfigure itself: start it afresh
+cmake_used=$(sed -n 's/^CMAKE_COMMAND:INTERNAL=//p' build/CMakeCache.txt 2>/dev/null || true)
+if [ -n "$cmake_used" ] && [ ! -x "$cmake_used" ]; then
+    echo "build/ was configured by $cmake_used, which is gone: building afresh"
+    rm -rf build
+fi
 idf.py reconfigure > /dev/null  # the version comes from git at configure time
 idf.py build > /dev/null
 version=$(python3 -c 'import json; print(json.load(open("build/project_description.json"))["project_version"])')

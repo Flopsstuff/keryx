@@ -10,6 +10,13 @@ set -euo pipefail
 project=${1:?usage: flash.sh <project>, e.g. flash.sh usb-soundcard}
 cd "$(dirname "$0")/$project"
 . "${IDF_PATH:-$HOME/esp/esp-idf}/export.sh" > /dev/null 2>&1
+# a build directory configured by a cmake that is gone (a Homebrew upgrade removes the old Cellar path) cannot
+# reconfigure itself: start it afresh
+cmake_used=$(sed -n 's/^CMAKE_COMMAND:INTERNAL=//p' build/CMakeCache.txt 2>/dev/null || true)
+if [ -n "$cmake_used" ] && [ ! -x "$cmake_used" ]; then
+    echo "build/ was configured by $cmake_used, which is gone: building afresh"
+    rm -rf build
+fi
 idf.py build > /dev/null
 cd build
 

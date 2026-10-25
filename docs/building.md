@@ -100,7 +100,9 @@ firmware/publish.sh                 # the GitHub release that boards update from
 (`bootloader.bin` at 0x0, `partition-table.bin` at 0x8000, `ota_data_initial.bin` at 0xf000, `keryx.bin` at
 0x20000), `flash_args`, `VERSION` and an ESP Web Tools `manifest.json`. They stay separate parts rather than one
 merged image on purpose: a merged image fills the gaps with 0xFF, and NVS — the pairing — lies in such a gap at
-0x9000. Only the latest release is kept; the `*.bin` files go to Git LFS.
+0x9000. Only the latest release is kept; the `*.bin` files go to Git LFS. A `build/` configured by a cmake that is
+gone since (Homebrew upgrades remove the old `Cellar/cmake/<version>` path) cannot reconfigure itself; `release.sh` and
+`flash.sh` then delete it and build afresh.
 
 `publish.sh` makes the same files a GitHub release, `firmware-<version>`, marked latest, with the firmware commits
 since the previous one as notes; it refuses a dirty build, uncommitted `release/` or an unpushed commit. Boards
