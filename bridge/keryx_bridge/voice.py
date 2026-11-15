@@ -43,6 +43,7 @@ DEFAULT_PROMPT = PACKAGE / "prompts" / "voice.md"
 DEFAULT_STOP_PHRASES = PACKAGE / "stop_phrases.txt"
 STT_RATE = 16000
 VOICE_WAIT = 2.0  # s a request waits for its voice ID before it goes without the tag
+STOP_HOLD = 1.5  # s a partial transcript that is a stop phrase must stay the latest to end the conversation
 
 
 def config_file():
@@ -389,6 +390,7 @@ class Conversation:
         self.ending = None  # why the conversation is to end now, on purpose: listen() returns on it
         self.end_after_answer = None  # why it is to end once the answer in progress has been played
         self.last_partial = ""  # the user's words in the latest partial transcript of the turn under way
+        self.stop_partial = None  # (phrase, when) while the latest partial transcript is a stop phrase
 
     @property
     def answering(self):
@@ -574,6 +576,13 @@ class Conversation:
 
     async def listen(self, ws):
         while True:
+            if self.stop_partial and time.monotonic() - self.stop_partial[1] >= STOP_HOLD:
+                # nothing after it: its final transcript is not coming (xAI drops or garbles some words in finals)
+                log(f"STT → partial {self.last_partial!r} stayed the stop phrase «{self.stop_partial[0]}» for "
+                    f"{STOP_HOLD:g} s with no final transcript", self)
+                self.app.notes.append(f"[The user ended the conversation by saying «{self.last_partial}»]")
+                self.end(f"stop phrase «{self.stop_partial[0]}»")
+                self.stop_partial = None
             if self.ending:
                 log(f"conversation ended: {self.ending}", self)
                 return
@@ -621,6 +630,8 @@ class Conversation:
         extra = f", end of turn {confidence:.2f}" if confidence is not None and user else ""
         log(f"STT → {flag}{extra}: {self.describe(event, user, echo)}", self)
         self.last_partial = user
+        phrase = self.app.stop_phrases.match(user) if self.app.stop_phrases is not None and user.strip() else None
+        self.stop_partial = (phrase, time.monotonic()) if phrase else None  # anything new heard cancels it
         if not user:
             return
         if self.answering and self.state == "speaking":
@@ -659,7 +670,7 @@ class Conversation:
     def on_utterance(self, event):
         self.user_talking = False
         text, echo = self.split_echo(event)
-        partial, self.last_partial = self.last_partial, ""
+        partial, self.last_partial, self.stop_partial = self.last_partial, "", None
         # first of all, before the echo and language checks: "arrivederci" may come back as Italian
         if self.stop_phrase(text, partial, event.get("language")):
             return
