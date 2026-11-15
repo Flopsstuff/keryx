@@ -234,6 +234,12 @@ are PCM16 little-endian mono.
 | bridge → board | `{"type":"console","id":7,"line":"ring brightness"}` | run a console line, if it is in the safe set |
 | board → bridge | `{"type":"console","id":7,"output":"ok ring brightness …\n"}` | what it printed (`error not allowed over Wi-Fi …` otherwise) |
 
+Beside the WebSocket, at every detection of the wake word (not a wake from the console or the button) the board sends
+`POST <bridge URL with http instead of ws>/wake-clip` with `Authorization: Bearer <token>`, `X-Keryx-Score` and the
+last 3 s the wake word heard as the body: 16 kHz mono PCM16 LE, its own input (R, the ASR beam, whatever
+`stt channel` is), ending at the detection. A task of its own sends it, so the stream is not held up; one clip at a
+time, and a detection while one is on its way gets none. The bridge keeps them for training the wake word.
+
 Measured against a test server, through the echo reference (`loop on`): 24 and 16 kHz answers clean (residual
 −40 dB), `played` 3.06 s after the first byte of a 3 s answer, 90–170 ms after `play_stop`; uplink frames 18 ms
 apart on average, at most ~40 ms.

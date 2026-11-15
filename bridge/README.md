@@ -107,6 +107,8 @@ or a firewall shows up right there.
 | `keryx-bridge say [--volume N\|+n\|-n] TEXT`, `./say.sh [--volume N\|+n\|-n] "TEXT"` | say something on the board now (after an answer in progress), optionally at volume N (0–100, the board's scale) or n steps from the board's, without changing the board's volume; the bridge tells Hermes about `say.sh`, so Hermes can speak on its own (reminders, timers) and quietly at night |
 | `keryx-bridge console LINE`, `./console.sh LINE` | run a command on the board's console over Wi-Fi and print its answer, e.g. `ring brightness night 5 22:00`, `status`, `config`; only a safe set (the rest needs the board on USB). Hermes knows about it |
 | `keryx-bridge mute [30m]`, `./mute.sh [30m]` / `./unmute.sh` | stop the board listening, optionally for a while (`90s`, `30m`, `2h`); only the microphone, it still speaks. The board keeps the state across restarts; Hermes knows about these too |
+| `keryx-bridge wakes [N]`, `./wake_label.sh` | the latest wakes in the wake log (below): id, time, score, label |
+| `keryx-bridge wake-label false\|true\|none [ID]`, `./wake_label.sh false [ID]` | label a wake, the latest without an id. Hermes does it when you tell Keryx it woke up by mistake |
 
 Logs: `journalctl --user -u keryx-bridge -f`. Every line has the wall clock and, inside a conversation, the
 milliseconds since its wake word: speech-to-text, Hermes' tool calls and first token, every sentence sent to
@@ -156,6 +158,18 @@ in [`voiceid/`](../voiceid/README.md) and are not in git.
   cosines, pause, the transcript). Guests' voices land there too. `KERYX_VOICEID_LOG` moves it,
   `KERYX_VOICEID_LOG_DAYS` (90) is how long it keeps, `--no-voiceid-log` turns it off.
 
+## Wake log
+
+Every wake word is kept for training it: at each detection the board POSTs the last 3 s the wake word heard (its
+own input, the ASR beam at 16 kHz, ending at the detection) to `/keryx/wake-clip`, and the bridge saves it at once
+as `~/.local/share/keryx/wakes/<YYYY-MM-DD>/<HHMMSS-mmm>.wav` with a JSON of the same name: time, score and the
+user's `label`. The id of a wake is `<YYYY-MM-DD>/<HHMMSS-mmm>`. The label comes through Hermes: say "это было
+ложное срабатывание" and Hermes runs `wake_label.sh false`, which labels the latest wake (the voice prompt tells it
+to). False wakes go into the wake word's negatives ([../wakeword/README.md](../wakeword/README.md)).
+
+`KERYX_WAKES` (or `--wakes DIR`) moves it, `--no-wakes` turns it off. The clips are the household's voices: they
+stay on this machine and out of git. A clip is 96 KB; nothing is deleted.
+
 ## HTTP control
 
 On the bridge's port, with `Authorization: Bearer <KERYX_BRIDGE_TOKEN>`:
@@ -171,6 +185,10 @@ On the bridge's port, with `Authorization: Bearer <KERYX_BRIDGE_TOKEN>`:
   microphone; with `for` the bridge unmutes it when the time is up
 - `POST /keryx/console` with `{"line": "…"}` — runs it on the board's console and answers `{"output": "…", "ok": …}`;
   the board runs only a safe set of commands (see `firmware/README.md`)
+- `GET /keryx/wakes?count=N` — the latest wakes in the wake log, newest first
+- `POST /keryx/wake-label` with `{"label": "false"|"true"|null}` and optionally `{"id": "…"}` — labels a wake (the
+  latest without an id) and answers with it
+- `POST /keryx/wake-clip` — the board's, with the clip as the body (see the wake log)
 
 Hermes can use these from its terminal tool, for example to change the volume when asked.
 

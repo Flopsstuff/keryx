@@ -656,6 +656,7 @@ static void capture_task(void *arg)
             // silence for the bridge's preroll too, and no wake word at all
             memset(audio16, 0, BLOCK_FRAMES / 3 * sizeof(int16_t));
             keryx_link_audio_up(audio16, BLOCK_FRAMES / 3);
+            keryx_link_wake_audio(audio16, BLOCK_FRAMES / 3);
             was_muted = true;
         } else if (was_muted) {
             // start listening afresh: no state left from before the mute
@@ -680,6 +681,7 @@ static void capture_task(void *arg)
             kww_decimate(decimate_l, proc, BLOCK_FRAMES, proc16);  // the same count: both see whole blocks
             stt_mix(audio16, proc16, n16, stt16);
             keryx_link_audio_up(stt16, n16);
+            keryx_link_wake_audio(audio16, n16);  // what the wake word hears, for wake clips
         }
         int nframes = muted ? 0 : kww_frontend_process(&frontend, audio16, n16, frames, 4);
         for (int f = 0; f < nframes; f++) {
@@ -696,7 +698,7 @@ static void capture_task(void *arg)
                 last_detection = now;
                 keryx_console_printf("wake score=%.3f\n", score);
                 wake_sound_requested = true;
-                keryx_link_wake(score);
+                keryx_link_wake(score, true);
             }
         }
         busy_us += esp_timer_get_time() - t0;
@@ -1094,7 +1096,7 @@ static bool console_command(const char *cmd)
     if (strcmp(cmd, "wake") == 0) {
         // as if the wake word fired, for testing the bridge without saying it
         wake_sound_requested = true;
-        keryx_link_wake(1.0f);
+        keryx_link_wake(1.0f, false);
         keryx_console_printf("wake score=1.000 (console)\n");
         keryx_console_printf("ok\n");
         return true;
@@ -1297,7 +1299,7 @@ static void panel_pressed(void)
     } else if (!mic_muted) {
         keryx_console_printf("button: wake\n");
         wake_sound_requested = true;
-        keryx_link_wake(1.0f);
+        keryx_link_wake(1.0f, false);
     }
 }
 

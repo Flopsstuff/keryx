@@ -35,6 +35,11 @@ board (at that volume, or that far from the board's, on the board's scale) and a
 POST <path>/mute with {"value": true|false} and optionally {"for": seconds}, after which the bridge unmutes;
 POST <path>/console with {"line": "…"}, which runs it on the board's console and answers with what it printed.
 
+Wake log (wakelog.py): at every detection of the wake word the board POSTs <path>/wake-clip with the token, the
+header X-Keryx-Score and the last 3 s the wake word heard as the body (16 kHz mono PCM16 LE, the ASR beam), beside
+the WebSocket; GET <path>/wakes?count=N lists the latest, and POST <path>/wake-label with {"label": "false"|"true"|
+null} and optionally {"id": "…"} labels one (the latest when no id is given).
+
 The bridge checks the token against the KERYX_BRIDGE_TOKEN setting. Everything else (Hermes, xAI, the options)
 lives in voice.py.
 """
@@ -54,6 +59,7 @@ import numpy as np
 from aiohttp import web
 
 from .voice import CONFIG, PACKAGE, STT_RATE, Assistant, apply_gain, dbfs, env, log, speakable, untagged
+from .wakelog import LABELS, WakeLog
 
 KEEP_S = 120  # seconds of the board's microphone kept for STT
 REPO = PACKAGE.parents[1]
@@ -73,6 +79,8 @@ BRIDGE_LINES = [
     f"board console: {REPO}/console.sh <command> runs a command on the board and prints its answer, e.g. "
     "`ring brightness` (the LED ring's day/night brightness: `ring brightness night 5 22:00`), `status`, `config`; "
     "only a safe set is allowed",
+    f"wake log: {REPO}/wake_label.sh lists the latest wakes (id, time, score, label); `wake_label.sh false` labels "
+    "the latest one false, `wake_label.sh false <id>` another one; `true` for a real one, `none` takes it off",
     f'speak on your own: {REPO}/say.sh [--volume N] "text" (says it on the speaker, after any answer in progress; '
     "for reminders, timers or anything the user asked to be told later; --volume 0..100 says it at that volume, on "
     "the same scale as the volume above, and --volume -20 / +10 that far from it, without changing it: use a low "
@@ -299,6 +307,8 @@ class Bridge:
         self.say_lock = asyncio.Lock()
         self.unmute_task = None
         self.saved_log_task = None  # a reference, so that the task is not collected while it runs
+        self.wakelog = WakeLog(args.wakes) if args.wakes else None
+        log(f"wake log: {self.wakelog.folder if self.wakelog else 'off'}")
 
     def status(self):
         if self.link.ws is None:
@@ -471,6 +481,54 @@ class Bridge:
         return web.json_response({"output": output, "ok": not last.startswith("error") and
                                   not last.startswith("unknown command")})
 
+    async def http_wake_clip(self, request):
+        """POST from the board, the body the wake word's last 3 s of audio: kept in the wake log."""
+        if not self.authorized(request):
+            return web.json_response({"error": "bad token"}, status=401)
+        pcm = await request.read()
+        if self.wakelog is None:
+            return web.json_response({"error": "the wake log is off (--no-wakes)"}, status=409)
+        if not pcm or len(pcm) % 2 or len(pcm) > 10 * 2 * STT_RATE:
+            return web.json_response({"error": "expected up to 10 s of 16 kHz PCM16"}, status=400)
+        try:
+            score = float(request.headers.get("X-Keryx-Score", ""))
+        except ValueError:
+            score = None
+        wake_id = await asyncio.to_thread(self.wakelog.save, pcm, score)
+        log(f"board → wake clip {wake_id}, score {score}, {len(pcm) / 2 / STT_RATE:.1f} s",
+            None if self.assistant.idle() else self.assistant.conversation)
+        return web.json_response({"id": wake_id})
+
+    async def http_wakes(self, request):
+        """GET ?count=N: the latest wakes in the wake log, newest first."""
+        if not self.authorized(request):
+            return web.json_response({"error": "bad token"}, status=401)
+        if self.wakelog is None:
+            return web.json_response({"error": "the wake log is off (--no-wakes)"}, status=409)
+        try:
+            count = max(1, min(100, int(request.query.get("count", "10"))))
+        except ValueError:
+            return web.json_response({"error": "count is a number"}, status=400)
+        return web.json_response(await asyncio.to_thread(self.wakelog.recent, count))
+
+    async def http_wake_label(self, request):
+        """POST {"label": "false"|"true"|null, "id": …}: labels a wake in the wake log, the latest without an id."""
+        if not self.authorized(request):
+            return web.json_response({"error": "bad token"}, status=401)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = None
+        if not isinstance(body, dict) or body.get("label") not in LABELS or \
+                not isinstance(body.get("id", ""), str):
+            return web.json_response({"error": 'send {"label": "false"|"true"|null, "id": "…"}'}, status=400)
+        if self.wakelog is None:
+            return web.json_response({"error": "the wake log is off (--no-wakes)"}, status=409)
+        wake = await asyncio.to_thread(self.wakelog.label, body["label"], body.get("id") or None)
+        if wake is None:
+            return web.json_response({"error": "no such wake"}, status=404)
+        return web.json_response(wake)
+
     async def http_say(self, request):
         """POST {"text": "…"}: says it on the board; answers once the board has played it."""
         if not self.authorized(request):
@@ -605,6 +663,11 @@ def add_server_arguments(parser):
     parser.add_argument("--port", type=int, default=int(env("KERYX_BRIDGE_PORT", "8765")),
                         help="port (default KERYX_BRIDGE_PORT, else 8765)")
     parser.add_argument("--path", default="/keryx", help="WebSocket path (default /keryx)")
+    parser.add_argument("--wakes", type=pathlib.Path,
+                        default=pathlib.Path(env("KERYX_WAKES", "~/.local/share/keryx/wakes")).expanduser(),
+                        help="where the board's clip of every wake word goes (16 kHz WAV and JSON, a folder a day), "
+                             "for training it (default KERYX_WAKES, else ~/.local/share/keryx/wakes)")
+    parser.add_argument("--no-wakes", dest="wakes", action="store_const", const=None, help="keep no wake clips")
     parser.add_argument("--tts-rate", type=int, default=24000, choices=[16000, 24000],
                         help="sample rate of the answer sent to the board (default 24000, xAI's own)")
 
@@ -620,6 +683,9 @@ async def serve(args):
         app.router.add_post(args.path + "/say", bridge.http_say)
         app.router.add_post(args.path + "/mute", bridge.http_mute)
         app.router.add_post(args.path + "/console", bridge.http_console)
+        app.router.add_post(args.path + "/wake-clip", bridge.http_wake_clip)
+        app.router.add_get(args.path + "/wakes", bridge.http_wakes)
+        app.router.add_post(args.path + "/wake-label", bridge.http_wake_label)
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         await web.TCPSite(runner, args.host, args.port).start()

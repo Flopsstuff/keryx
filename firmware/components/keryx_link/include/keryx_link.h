@@ -13,6 +13,9 @@
  *                     {"type":"mute","value":bool}; either without value asks for the current one;
  *                     {"type":"console","id":…,"line":…} (a console command, run if the application allows it)
  *
+ * Beside it, every detection of the wake word goes to the bridge as an HTTP POST <bridge URL>/wake-clip (ws → http)
+ * with the token: the last 3 s the wake word heard before it fired (16 kHz PCM16 LE, R), for training it.
+ *
  * The bridge's URL and token come from keryx_net. Wi-Fi power save is off from a wake or a play_start (the bridge may
  * start an answer on its own) until 5 s after the stream and the playback have ended.
  */
@@ -42,8 +45,12 @@ void keryx_link_restart(void);
 // Capture task, every block: the 16 kHz ASR audio, kept for the preroll and streamed during a conversation.
 void keryx_link_audio_up(const int16_t *samples, size_t count);
 
-// Capture task: the wake word fired. Never blocks.
-void keryx_link_wake(float score);
+// Capture task, every block: the wake word's own 16 kHz input (R), kept for wake clips (zeros while muted).
+void keryx_link_wake_audio(const int16_t *samples, size_t count);
+
+// Capture task: the wake word fired (detected: its clip goes to the bridge), or the console or the button asked for
+// a wake (not detected: no clip). Never blocks.
+void keryx_link_wake(float score, bool detected);
 
 // The stop button: asks the bridge to end the conversation (it stops the answer and the stream). Never blocks.
 void keryx_link_stop(void);

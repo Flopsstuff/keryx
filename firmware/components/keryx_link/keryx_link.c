@@ -8,6 +8,7 @@
 #include "cJSON.h"
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
+#include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_websocket_client.h"
@@ -27,6 +28,9 @@ static const char *TAG = "link";
 #define UP_FRAME 320                // 20 ms per binary frame
 #define UP_RING 32768               // 2 s of uplink audio; a power of two
 #define PREROLL_MS 500
+#define CLIP_RING 65536             // 4.1 s of the wake word's own audio, for wake clips; a power of two
+#define CLIP_MS 3000                // a wake clip: what the wake word heard in the last 3 s before it fired
+#define CLIP_SAMPLES (CLIP_MS * UP_RATE / 1000)
 #define STREAM_MAX_MS 120000        // a stream nobody stops ends here
 #define PLAY_BUFFER_BYTES (10 * 24000 * 2)  // 10 s at 24 kHz
 #define PLAY_PRIME_MS 150           // queued before the bridge's audio starts playing
@@ -62,6 +66,15 @@ typedef struct {
 static QueueHandle_t console_replies;
 static volatile float wake_score;
 static int64_t stream_started_us;
+
+// wake clips: the capture task writes clip_ring; on a detection the clip task takes the last CLIP_MS out of it and
+// POSTs them to the bridge (<bridge URL>/wake-clip). One at a time: a detection while one is on its way gets none.
+static int16_t *clip_ring, *clip_buf;  // in PSRAM
+static volatile uint32_t clip_written;  // samples ever written to clip_ring
+static volatile uint32_t clip_end;      // clip_written at the detection
+static volatile float clip_score;
+static volatile bool clip_busy;
+static TaskHandle_t clip_task_handle;
 
 // downlink: the WebSocket task writes play_src, the playback task reads it
 static StreamBufferHandle_t play_src;
@@ -406,6 +419,48 @@ static void link_task(void *arg)
     }
 }
 
+// Sends each wake clip as a POST to the bridge, beside the WebSocket: the stream is not held up by it.
+static void clip_task(void *arg)
+{
+    char post_url[URL_MAX + 16], auth[TOKEN_MAX + 8];  // on the stack, in PSRAM: not internal RAM
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        const uint32_t start = clip_end - CLIP_SAMPLES;
+        for (int i = 0; i < CLIP_SAMPLES; i++) {
+            clip_buf[i] = clip_ring[(start + i) & (CLIP_RING - 1)];
+        }
+        if (clip_written - start > CLIP_RING) {
+            keryx_console_printf("wake clip lost: taken too late\n");  // overwritten while this task waited
+            clip_busy = false;
+            continue;
+        }
+        xSemaphoreTake(client_lock, portMAX_DELAY);
+        // ws://host:port/keryx → http://host:port/keryx/wake-clip (wss → https)
+        snprintf(post_url, sizeof(post_url), "http%s/wake-clip", strncmp(url, "ws", 2) == 0 ? url + 2 : "://");
+        snprintf(auth, sizeof(auth), "Bearer %s", token);
+        xSemaphoreGive(client_lock);
+        char score[16];
+        snprintf(score, sizeof(score), "%.3f", clip_score);
+        esp_http_client_config_t cfg = {.url = post_url, .method = HTTP_METHOD_POST, .timeout_ms = 5000};
+        esp_http_client_handle_t http = esp_http_client_init(&cfg);
+        esp_err_t err = ESP_ERR_NO_MEM;
+        int status = 0;
+        if (http != NULL) {
+            esp_http_client_set_header(http, "Authorization", auth);
+            esp_http_client_set_header(http, "Content-Type", "application/octet-stream");
+            esp_http_client_set_header(http, "X-Keryx-Score", score);
+            esp_http_client_set_post_field(http, (const char *)clip_buf, CLIP_SAMPLES * sizeof(int16_t));
+            err = esp_http_client_perform(http);
+            status = esp_http_client_get_status_code(http);
+            esp_http_client_cleanup(http);
+        }
+        if (err != ESP_OK || status != 200) {
+            keryx_console_printf("wake clip not sent: %s, HTTP %d\n", esp_err_to_name(err), status);
+        }
+        clip_busy = false;
+    }
+}
+
 void keryx_link_restart(void)
 {
     xSemaphoreTake(client_lock, portMAX_DELAY);
@@ -448,17 +503,26 @@ esp_err_t keryx_link_start(const keryx_link_callbacks_t *cb)
         callbacks = *cb;
     }
     // the library logs every failed attempt, every 2 s while the bridge is down; `status` and the report say enough
-    const char *const noisy[] = {"websocket_client", "transport_ws", "transport_base", "esp-tls", "trans_tcp"};
+    const char *const noisy[] = {"websocket_client", "transport_ws", "transport_base", "esp-tls", "trans_tcp",
+                                 "HTTP_CLIENT"};
     for (size_t i = 0; i < sizeof(noisy) / sizeof(noisy[0]); i++) {
         esp_log_level_set(noisy[i], ESP_LOG_NONE);
     }
     design_taps(taps2, 2);
     design_taps(taps3, 3);
     up_ring = heap_caps_calloc(UP_RING, sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    clip_ring = heap_caps_calloc(CLIP_RING, sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    clip_buf = heap_caps_calloc(CLIP_SAMPLES, sizeof(int16_t), MALLOC_CAP_SPIRAM);
     play_src = xStreamBufferCreateWithCaps(PLAY_BUFFER_BYTES, 1, MALLOC_CAP_SPIRAM);
     client_lock = xSemaphoreCreateMutex();
     console_replies = xQueueCreate(4, sizeof(console_reply_t));
-    if (up_ring == NULL || play_src == NULL || client_lock == NULL || console_replies == NULL) {
+    if (up_ring == NULL || clip_ring == NULL || clip_buf == NULL || play_src == NULL || client_lock == NULL ||
+        console_replies == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    // the stack in PSRAM, like the link task's
+    if (xTaskCreatePinnedToCoreWithCaps(clip_task, "clip", 8192, NULL, 4, &clip_task_handle, 0, MALLOC_CAP_SPIRAM) !=
+        pdPASS) {
         return ESP_ERR_NO_MEM;
     }
     // the stack in PSRAM: internal RAM is short, and this task never writes flash
@@ -485,6 +549,18 @@ void keryx_link_audio_up(const int16_t *samples, size_t count)
     }
 }
 
+void keryx_link_wake_audio(const int16_t *samples, size_t count)
+{
+    if (clip_ring == NULL) {
+        return;
+    }
+    uint32_t w = clip_written;
+    for (size_t i = 0; i < count; i++) {
+        clip_ring[(w + i) & (CLIP_RING - 1)] = samples[i];
+    }
+    clip_written = w + count;
+}
+
 void keryx_link_volume_changed(int volume)
 {
     volume_pending = volume;
@@ -504,10 +580,16 @@ void keryx_link_mute_changed(bool muted)
     }
 }
 
-void keryx_link_wake(float score)
+void keryx_link_wake(float score, bool detected)
 {
     if (link_task_handle == NULL || state == LINK_OFF) {
         return;
+    }
+    if (detected && clip_task_handle != NULL && !clip_busy) {
+        clip_busy = true;
+        clip_end = clip_written;
+        clip_score = score;
+        xTaskNotifyGive(clip_task_handle);
     }
     wake_score = score;
     wake_pending = true;
