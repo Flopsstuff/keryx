@@ -334,19 +334,20 @@ static void clock_face(bool muted)
     put((int)(minutes * RING_PIXELS / 60), 0, 0.25f, 1, hand);
 }
 
-// The conversation ended on purpose, p of the way through (0..1): the whole ring lights up in the listening colour
-// for the first fifth, then goes dark from 6 o'clock towards 12 on both sides, like eyelids closing.
+// The conversation ended on purpose, p of the way through (0..1): the whole ring lights up orange for the first
+// fifth, shrinks from 12 and 6 o'clock into two points at 3 and 9 until 0.8, and the two points go out.
 static void end_animation(float p)
 {
-    const float flash = 0.2f, half = RING_PIXELS / 2.0f;
-    const float open = p < flash ? 1 : 1 - (p - flash) / (1 - flash);  // the share of each side still lit
-    const float level = p < flash ? 0.6f + 0.4f * p / flash : 1;
-    float rgb[3];
-    hue_rgb(hue_listening, 1.0f, rgb);
+    const int quarter = RING_PIXELS / 4;
+    const float flash = 0.2f, shrunk = 0.8f;
+    // how far from 3 and 9 o'clock the ring is still lit, in quarters
+    const float open = p < flash ? 1 : p < shrunk ? 1 - (p - flash) / (shrunk - flash) : 0;
+    const float level = p < flash ? 0.6f + 0.4f * p / flash : p < shrunk ? 1 : 1 - (p - shrunk) / (1 - shrunk);
     for (int i = 0; i < RING_PIXELS; i++) {
-        const int from_top = i < RING_PIXELS - i ? i : RING_PIXELS - i;  // 0 at 12 o'clock, half at 6
-        const float lit = open * half - from_top + 0.5f;                  // the edge pixel lit in part
-        add(i, rgb[0], rgb[1], rgb[2], level * (lit >= 1 ? 1 : lit > 0 ? lit : 0));
+        const int to3 = abs(i - quarter), to9 = abs(i - 3 * quarter);
+        const int d = to3 < to9 ? to3 : to9;  // pixels to the nearer of 3 and 9 o'clock, 0..quarter
+        const float lit = open * quarter - d + 1;  // the edge pixel lit in part; the points always
+        add(i, 1.0f, 0.4f, 0, level * (lit >= 1 ? 1 : lit > 0 ? lit : 0));
     }
 }
 

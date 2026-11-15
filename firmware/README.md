@@ -191,7 +191,7 @@ predecessors.
   marks when muted, a level meter while listening (the whole conversation) and while answering, a purple comet while
   waiting for the answer (the thinking sound), one orange pixel breathing without a bridge, for 0.3 s when the bridge
   ends a conversation on purpose (`{"type":"sound","name":"end"}`: a stop phrase, the end command, the button) the
-  whole ring in the listening colour going dark from 6 o'clock towards 12, and for 1.5 s after any
+  whole ring orange, shrinking into two points at 3 and 9 o'clock that go out, and for 1.5 s after any
   volume change an arc as long as the volume. The meter: the pixels at 3 and 9 o'clock stay at half brightness, and arcs
   grow from them both ways, to meet at 12 and 6 at full level (quick up, slow down; brightest at the roots, over a faint
   glow of the rest). Listening it follows the ASR beam's peak, −45 to −12 dBFS, in blue (hue 220°), the glow breathing;
