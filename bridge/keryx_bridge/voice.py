@@ -388,6 +388,7 @@ class Conversation:
         self.voice = app.voiceid.tracker() if app.voiceid else None  # who is talking, over the conversation
         self.ending = None  # why the conversation is to end now, on purpose: listen() returns on it
         self.end_after_answer = None  # why it is to end once the answer in progress has been played
+        self.last_partial = ""  # the user's words in the latest partial transcript of the turn under way
 
     @property
     def answering(self):
@@ -619,6 +620,7 @@ class Conversation:
         confidence = event.get("end_of_turn_confidence")
         extra = f", end of turn {confidence:.2f}" if confidence is not None and user else ""
         log(f"STT → {flag}{extra}: {self.describe(event, user, echo)}", self)
+        self.last_partial = user
         if not user:
             return
         if self.answering and self.state == "speaking":
@@ -634,9 +636,33 @@ class Conversation:
             return
         self.user_talking = True
 
+    def stop_phrase(self, text, partial, language):
+        """The stop phrase the utterance is, judged by its final text or, when that came back garbled, by its last
+        partial one: the final transcript of a short phrase is sometimes in another language ("Иди нахер." → "一 枚",
+        "Иди на." → "İyiyim erken."). Garbled: a language not in --languages, or no word in common with the partial;
+        a final that only goes on from the partial ("Всё, пока не ушёл, …") is the user's. Ends the conversation on
+        a stop phrase; returns whether it did."""
+        phrases = self.app.stop_phrases
+        if phrases is None:
+            return False
+        garbled = (language and self.args.languages and language not in self.args.languages) or \
+            not set(words(text)) & set(words(partial))
+        for heard in (text, partial) if garbled else (text,):
+            if heard.strip() and (phrase := phrases.match(heard)):
+                which = "" if heard is text else f" (its partial transcript {heard!r})"
+                log(f"STT → speech_final {text!r}{which}: the stop phrase «{phrase}»", self)
+                self.app.notes.append(f"[The user ended the conversation by saying «{heard}»]")
+                self.end(f"stop phrase «{phrase}»")
+                return True
+        return False
+
     def on_utterance(self, event):
         self.user_talking = False
         text, echo = self.split_echo(event)
+        partial, self.last_partial = self.last_partial, ""
+        # first of all, before the echo and language checks: "arrivederci" may come back as Italian
+        if self.stop_phrase(text, partial, event.get("language")):
+            return
         if not text.strip():
             if echo:
                 log(f"STT → speech_final: {self.describe(event, text, echo)}", self)
@@ -652,12 +678,6 @@ class Conversation:
                     self.waiting_since = time.monotonic()
                 return
             log(f"STT → speech_final with Keryx's own voice removed: {self.describe(event, text, echo)}", self)
-        if self.app.stop_phrases is not None and (phrase := self.app.stop_phrases.match(text)):
-            # before the language check: "arrivederci" may come back as Italian
-            log(f"STT → speech_final {text!r}: the stop phrase «{phrase}»", self)
-            self.app.notes.append(f"[The user ended the conversation by saying «{text}»]")
-            self.end(f"stop phrase «{phrase}»")
-            return
         voice = self.hear(event, text)  # every utterance of the user's tells who is talking, a request or not
         language = event.get("language")
         if language and self.args.languages and language not in self.args.languages:
