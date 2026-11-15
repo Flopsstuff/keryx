@@ -21,4 +21,4 @@ keryx-bridge = "keryx_bridge.cli:main"
 packages = ["keryx_bridge"]
 
 [tool.setuptools.package-data]
-keryx_bridge = ["prompts/*.md"]
+keryx_bridge = ["prompts/*.md", "stop_phrases.txt"]

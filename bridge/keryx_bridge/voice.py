@@ -40,6 +40,7 @@ from .voiceid import PAD as VOICE_PAD, Log as VoiceLog, VoiceID
 
 PACKAGE = pathlib.Path(__file__).resolve().parent
 DEFAULT_PROMPT = PACKAGE / "prompts" / "voice.md"
+DEFAULT_STOP_PHRASES = PACKAGE / "stop_phrases.txt"
 STT_RATE = 16000
 VOICE_WAIT = 2.0  # s a request waits for its voice ID before it goes without the tag
 
@@ -203,6 +204,37 @@ LATIN = dict(zip("абвгдежзийклмнопрстуфхцчшщыэюя",
 KERYX = re.compile(r"[kc][eiy]r[eiy]?[kxc]+s?")  # Keryx, Kerix, Kirex, Керикс, Кирекс…
 
 
+class StopPhrases:
+    """Phrases that end a conversation on the bridge, without Hermes: a text file, one phrase per line, # comments
+    (stop_phrases.txt). An utterance matches when, after a leading wake phrase, its words are exactly a phrase's
+    words. The file is read again whenever it changes."""
+
+    def __init__(self, path):
+        self.path = path
+        self.mtime = None
+        self.phrases = set()
+
+    def load(self):
+        try:
+            mtime = self.path.stat().st_mtime
+        except OSError as e:
+            if self.mtime is not False:
+                log(f"stop phrases: cannot read {self.path}: {e}")
+            self.mtime, self.phrases = False, set()
+            return
+        if mtime != self.mtime:
+            lines = self.path.read_text().splitlines()
+            self.phrases = {" ".join(words(line)) for line in lines if not line.lstrip().startswith("#")} - {""}
+            self.mtime = mtime
+            log(f"stop phrases: {len(self.phrases)} from {self.path}")
+
+    def match(self, text):
+        """The phrase the utterance is, or None."""
+        self.load()
+        heard = " ".join(words(strip_wake(text)[0]))
+        return heard if heard in self.phrases else None
+
+
 def strip_wake(text):
     """(the rest, the wake phrase) when text starts with "Hey Keryx" or "Keryx" in any of its spellings.
 
@@ -285,6 +317,12 @@ def add_arguments(parser, save_dir):
                         help="keep nothing")
     parser.add_argument("--voiceid-log-days", type=float, default=float(env("KERYX_VOICEID_LOG_DAYS", "90")),
                         help="days the voice ID log keeps (default KERYX_VOICEID_LOG_DAYS, else 90)")
+    parser.add_argument("--stop-phrases", type=config_path,
+                        default=config_path(env("KERYX_STOP_PHRASES_PATH", str(DEFAULT_STOP_PHRASES))),
+                        help="file of phrases that end a conversation at once, without Hermes, one per line "
+                             "(default KERYX_STOP_PHRASES_PATH, else the bundled stop_phrases.txt)")
+    parser.add_argument("--no-stop-phrases", dest="stop_phrases", action="store_const", const=None,
+                        help="no stop phrases: a conversation ends by silence, the button or the end command")
     parser.add_argument("--meter", type=float, default=2.0,
                         help="seconds between STT level lines during a conversation (default 2)")
     parser.add_argument("--heartbeat", type=float, default=15.0,
@@ -348,6 +386,8 @@ class Conversation:
         self.stt_open = None
         self.barge_in_diagnostics = []
         self.voice = app.voiceid.tracker() if app.voiceid else None  # who is talking, over the conversation
+        self.ending = None  # why the conversation is to end now: listen() returns on it
+        self.end_after_answer = None  # why it is to end once the answer in progress has been played
 
     @property
     def answering(self):
@@ -362,6 +402,15 @@ class Conversation:
             self.interrupt(f"wake word (score {score})")
         else:
             log(f"wake (score {score}) while {self.state}: already listening", self)
+
+    def end(self, reason, after_answer=False):
+        """Ends the conversation without waiting for silence: now, or once the answer in progress has been played
+        (an answer cut short by the user cancels that)."""
+        if after_answer and self.answering:
+            log(f"the conversation ends after this answer: {reason}", self)
+            self.end_after_answer = reason
+        else:
+            self.ending = reason
 
     def interrupt(self, reason):
         log(f"interrupting the answer while {self.state}: {reason}", self)
@@ -522,6 +571,9 @@ class Conversation:
 
     async def listen(self, ws):
         while True:
+            if self.ending:
+                log(f"conversation ended: {self.ending}", self)
+                return
             if not self.answering and not self.user_talking:
                 limit = self.args.silence if self.exchanges == 0 else self.args.follow_up
                 if time.monotonic() - self.waiting_since > limit:
@@ -598,6 +650,12 @@ class Conversation:
                     self.waiting_since = time.monotonic()
                 return
             log(f"STT → speech_final with Keryx's own voice removed: {self.describe(event, text, echo)}", self)
+        if self.app.stop_phrases is not None and (phrase := self.app.stop_phrases.match(text)):
+            # before the language check: "arrivederci" may come back as Italian
+            log(f"STT → speech_final {text!r}: the stop phrase «{phrase}»", self)
+            self.app.notes.append(f"[The user ended the conversation by saying «{text}»]")
+            self.end(f"stop phrase «{phrase}»")
+            return
         voice = self.hear(event, text)  # every utterance of the user's tells who is talking, a request or not
         language = event.get("language")
         if language and self.args.languages and language not in self.args.languages:
@@ -638,7 +696,11 @@ class Conversation:
 
     def answered(self, task):
         if task.cancelled():
+            self.end_after_answer = None  # the user cut the answer short: they are still talking
             return  # whoever interrupted it is already talking
+        if self.end_after_answer:
+            self.ending = self.end_after_answer
+            return
         self.waiting_since = time.monotonic()
         if self.args.follow_up > 0:
             log(f"listening for a follow-up for {self.args.follow_up:g} s", self)
@@ -683,6 +745,11 @@ class Assistant:
         self.conversation = None
         self.conversations = 0
         self.voiceid = self.load_voiceid()
+        self.stop_phrases = StopPhrases(args.stop_phrases) if args.stop_phrases else None
+        if self.stop_phrases is not None:
+            self.stop_phrases.load()
+        else:
+            log("stop phrases: off (--no-stop-phrases)")
         self.voicelog = None
         if self.voiceid and self.args.voiceid_log is not None:
             self.voicelog = VoiceLog(self.args.voiceid_log, self.args.voiceid_log_days)
@@ -804,6 +871,15 @@ class Assistant:
         else:
             self.touch()
         self.notes.append(f"[Keryx said aloud on its own: «{untagged(text)}»]")
+
+    def end_conversation(self, now=False):
+        """The end command (end.sh): None without a conversation, else "now" or "after the answer"."""
+        if self.idle():
+            return None
+        conv = self.conversation
+        later = not now and conv.answering
+        conv.end("the end command" + (" (--now)" if now else ""), after_answer=later)
+        return "after the answer" if later else "now"
 
     # ------------------------------------------------------------ wake events
 

@@ -1,0 +1,18 @@
+# Phrases that end a conversation at once, on the bridge itself: Keryx stops listening (and stops an answer), and
+# Hermes only gets a note about it with the next request. One phrase per line. A phrase ends the conversation only
+# when it is the whole utterance (after a leading "Hey Keryx"); case, punctuation and ё/е do not matter.
+# Speech recognition spells some words in more than one way: list every spelling it uses (the bridge's log shows
+# them, "STT → speech_final …"). The bridge reads this file again when it changes; no restart needed.
+# Another file: KERYX_STOP_PHRASES_PATH or --stop-phrases; none: --no-stop-phrases.
+arrivederci
+ариведерчи
+аривидерчи
+арриведерчи
+арривидерчи
+всё, пока
+отбой
+fuck off
+фак офф
+фак оф
+иди нахер
+иди на хер

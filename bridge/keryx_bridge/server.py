@@ -33,7 +33,9 @@ POST <path>/volume with {"value": 0..100} or {"delta": n}, which answers with th
 POST <path>/say with {"text": "…"} and optionally {"volume": 0..100} or {"volume_delta": ±n}, which says it on the
 board (at that volume, or that far from the board's, on the board's scale) and answers once it has been played;
 POST <path>/mute with {"value": true|false} and optionally {"for": seconds}, after which the bridge unmutes;
-POST <path>/console with {"line": "…"}, which runs it on the board's console and answers with what it printed.
+POST <path>/console with {"line": "…"}, which runs it on the board's console and answers with what it printed;
+POST <path>/end, optionally with {"now": true}, which ends the conversation without waiting for silence: once the
+answer in progress has been played, or at once with "now" (as the stop button does).
 
 Wake log (wakelog.py): at every detection of the wake word the board POSTs <path>/wake-clip with the token, the
 header X-Keryx-Score and the last 3 s the wake word heard as the body (16 kHz mono PCM16 LE, the ASR beam), beside
@@ -81,6 +83,9 @@ BRIDGE_LINES = [
     "only a safe set is allowed",
     f"wake log: {REPO}/wake_label.sh lists the latest wakes (id, time, score, label); `wake_label.sh false` labels "
     "the latest one false, `wake_label.sh false <id>` another one; `true` for a real one, `none` takes it off",
+    f"ending a conversation: {REPO}/end.sh makes Keryx stop listening once your answer has been played, instead of "
+    "waiting for silence: use it when the user says the conversation is over, with a short goodbye in the same "
+    "answer; `end.sh --now` cuts everything at once",
     f'speak on your own: {REPO}/say.sh [--volume N] "text" (says it on the speaker, after any answer in progress; '
     "for reminders, timers or anything the user asked to be told later; --volume 0..100 says it at that volume, on "
     "the same scale as the volume above, and --volume -20 / +10 that far from it, without changing it: use a low "
@@ -529,6 +534,21 @@ class Bridge:
             return web.json_response({"error": "no such wake"}, status=404)
         return web.json_response(wake)
 
+    async def http_end(self, request):
+        """POST, optionally {"now": true}: ends the conversation, once the answer in progress has been played or at
+        once. Answers right away: Hermes calls it in the middle of the answer it waits for."""
+        if not self.authorized(request):
+            return web.json_response({"error": "bad token"}, status=401)
+        try:
+            body = await request.json() if request.can_read_body else {}
+        except json.JSONDecodeError:
+            body = None
+        if not isinstance(body, dict) or not isinstance(body.get("now", False), bool):
+            return web.json_response({"error": 'send nothing, or {"now": true|false}'}, status=400)
+        when = self.assistant.end_conversation(now=body.get("now", False))
+        log(f"end command: {when or 'no conversation'}")
+        return web.json_response({"conversation": when is not None, "ends": when})
+
     async def http_say(self, request):
         """POST {"text": "…"}: says it on the board; answers once the board has played it."""
         if not self.authorized(request):
@@ -683,6 +703,7 @@ async def serve(args):
         app.router.add_post(args.path + "/say", bridge.http_say)
         app.router.add_post(args.path + "/mute", bridge.http_mute)
         app.router.add_post(args.path + "/console", bridge.http_console)
+        app.router.add_post(args.path + "/end", bridge.http_end)
         app.router.add_post(args.path + "/wake-clip", bridge.http_wake_clip)
         app.router.add_get(args.path + "/wakes", bridge.http_wakes)
         app.router.add_post(args.path + "/wake-label", bridge.http_wake_label)

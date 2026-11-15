@@ -107,6 +107,7 @@ or a firewall shows up right there.
 | `keryx-bridge say [--volume N\|+n\|-n] TEXT`, `./say.sh [--volume N\|+n\|-n] "TEXT"` | say something on the board now (after an answer in progress), optionally at volume N (0–100, the board's scale) or n steps from the board's, without changing the board's volume; the bridge tells Hermes about `say.sh`, so Hermes can speak on its own (reminders, timers) and quietly at night |
 | `keryx-bridge console LINE`, `./console.sh LINE` | run a command on the board's console over Wi-Fi and print its answer, e.g. `ring brightness night 5 22:00`, `status`, `config`; only a safe set (the rest needs the board on USB). Hermes knows about it |
 | `keryx-bridge mute [30m]`, `./mute.sh [30m]` / `./unmute.sh` | stop the board listening, optionally for a while (`90s`, `30m`, `2h`); only the microphone, it still speaks. The board keeps the state across restarts; Hermes knows about these too |
+| `keryx-bridge end [--now]`, `./end.sh [--now]` | end the conversation without waiting for silence: once the answer in progress has been played, or at once with `--now` (as the stop button). Hermes knows about it and ends the conversation when you say it is over |
 | `keryx-bridge wakes [N]`, `./wake_label.sh` | the latest wakes in the wake log (below): id, time, score, label |
 | `keryx-bridge wake-label false\|true\|none [ID]`, `./wake_label.sh false [ID]` | label a wake, the latest without an id. Hermes does it when you tell Keryx it woke up by mistake |
 
@@ -124,6 +125,13 @@ text-to-speech, playback and interruptions.
   appends a "Device status" section with the board's volume.
 - `KERYX_FOLLOW_UP` — seconds of silence after an answer that end a conversation (7); after that it takes the wake
   word again.
+- Stop phrases — saying one of them as a whole utterance ends the conversation at once, on the bridge, without
+  Hermes: "Arrivederci", "Всё, пока", "Отбой", "Fuck off", "Иди нахер" (after "Hey Keryx" too, and while Keryx is
+  talking). They are in [`keryx_bridge/stop_phrases.txt`](keryx_bridge/stop_phrases.txt), one per line, with every
+  spelling speech recognition uses; case, punctuation and ё/е do not matter, and the bridge reads the file again
+  when it changes.
+  `KERYX_STOP_PHRASES_PATH` (or `--stop-phrases FILE`) points at another file, `--no-stop-phrases` turns them off.
+  Hermes gets a note with the next request.
 - `KERYX_SESSION_TIMEOUT` — how long Hermes remembers the conversation (`1h`). Hermes keeps the history in one of
   its sessions (`X-Hermes-Session-Id` `keryx-<date>-<time>`, memory scope `X-Hermes-Session-Key: keryx`): a wake
   word within this time of the last exchange continues it, a later one starts a new session. The bridge remembers
@@ -185,6 +193,8 @@ On the bridge's port, with `Authorization: Bearer <KERYX_BRIDGE_TOKEN>`:
   microphone; with `for` the bridge unmutes it when the time is up
 - `POST /keryx/console` with `{"line": "…"}` — runs it on the board's console and answers `{"output": "…", "ok": …}`;
   the board runs only a safe set of commands (see `firmware/README.md`)
+- `POST /keryx/end`, optionally with `{"now": true}` — ends the conversation once the answer in progress has been
+  played, or at once; answers right away with `{"conversation": …, "ends": "after the answer"|"now"|null}`
 - `GET /keryx/wakes?count=N` — the latest wakes in the wake log, newest first
 - `POST /keryx/wake-label` with `{"label": "false"|"true"|null}` and optionally `{"id": "…"}` — labels a wake (the
   latest without an id) and answers with it
