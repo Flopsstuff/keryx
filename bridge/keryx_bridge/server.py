@@ -513,14 +513,20 @@ class Bridge:
         log(f"board → wake clip {wake_id or '(not kept)'}, score {score}, {len(pcm) / 2 / STT_RATE:.1f} s",
             None if self.assistant.idle() else self.assistant.conversation)
         if self.args.wake_check:
-            task = asyncio.create_task(self.check_wake(pcm, wake_id, received))
+            # the conversation this wake started, fixed now: the running one if it began within 3 s; with none
+            # running, the clip came before its wake message, and its conversation is the next one to start
+            conv = None if self.assistant.idle() else self.assistant.conversation
+            target = conv if conv is not None and received - conv.start < 3 else None
+            following = self.assistant.conversations + 1 if conv is None else None
+            task = asyncio.create_task(self.check_wake(pcm, wake_id, received, target, following))
             self.wake_checks.add(task)
             task.add_done_callback(self.wake_checks.discard)
         return web.json_response({"id": wake_id})
 
-    async def check_wake(self, pcm, wake_id, received):
+    async def check_wake(self, pcm, wake_id, received, target, following):
         """The second opinion (wakecheck.py): xAI transcribes the clip; without Keryx in it, the conversation this
-        wake started ends as on a stop phrase. Any failure leaves the conversation alone."""
+        wake started (target, or else the one numbered `following` if it began within 3 s of the clip) ends as on a
+        stop phrase. Never another one, and any failure leaves the conversation alone."""
         buf = io.BytesIO()
         with wave.open(buf, "wb") as w:
             w.setnchannels(1)
@@ -535,10 +541,12 @@ class Bridge:
             log(f"wake check: no transcript ({e!r}), the wake stands")
             return
         heard = says_keryx(text)
-        conv = self.assistant.conversation
-        # the conversation this wake started: the board sends the clip within a second of its wake message
-        ours = conv is not None and conv.state != "over" and abs(conv.start - received) < 3 and \
-            not getattr(conv, "wake_checked", False)
+        conv = target
+        if conv is None and following is not None:
+            latest = self.assistant.conversation
+            if latest is not None and latest.number == following and abs(latest.start - received) < 3:
+                conv = latest
+        ours = conv is not None and conv.state != "over" and not getattr(conv, "wake_checked", False)
         log(f"wake check: xAI heard {text!r} in {(time.monotonic() - t0) * 1000:.0f} ms: "
             f"{'the wake phrase' if heard else 'no wake phrase, a false wake'}", conv if ours else None)
         if wake_id is not None:
