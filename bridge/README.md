@@ -175,6 +175,17 @@ user's `label`. The id of a wake is `<YYYY-MM-DD>/<HHMMSS-mmm>`. The label comes
 ложное срабатывание" and Hermes runs `wake_label.sh false`, which labels the latest wake (the voice prompt tells it
 to). False wakes go into the wake word's negatives ([../wakeword/README.md](../wakeword/README.md)).
 
+**Wake check.** The wake word on the board sometimes fires on room noise (a creak, a whistle). So each clip also
+goes to xAI's batch speech-to-text with the wake phrase as key terms (`keyterm`: "Hey Keryx", "Хэй Керикс",
+"Керикс", "Keryx"); without them xAI writes a real wake as "Hey kids" or "Take care", with them as "Hey Keryx", while
+noise comes back empty. When the transcript has no word that is Keryx in one of its spellings, the conversation that
+wake started ends at once, about a second after the wake, with the board's end chime and ring, and the clip's JSON
+gets `"stt"` (what xAI heard) and `"guess": "false"` (`"true"` otherwise; wakes in the middle of a conversation are
+only noted). If xAI does not answer within 2 s, the wake stands. The key terms also pull towards Keryx what merely
+sounds like it ("Hey, Eric"): this catches noise, not similar words. `KERYX_WAKE_CHECK=off` (or `--no-wake-check`)
+turns it off, `KERYX_WAKE_KEYTERMS` (comma-separated, or `--wake-keyterms`) changes the key terms,
+`--wake-check-timeout` the 2 s.
+
 `KERYX_WAKES` (or `--wakes DIR`) moves it, `--no-wakes` turns it off. The clips are the household's voices: they
 stay on this machine and out of git. A clip is 96 KB; nothing is deleted.
 

@@ -4,7 +4,8 @@ At every detection the board POSTs the last 3 s of the wake word's input (the AS
 audio the model fired on; speech-to-text may hear L instead) to /keryx/wake-clip (server.py). Each is kept as
 
   <folder>/<YYYY-MM-DD>/<HHMMSS-mmm>.wav    16 kHz mono PCM16, ending where the wake word fired
-  <folder>/<YYYY-MM-DD>/<HHMMSS-mmm>.json   {"time", "score", "label"}
+  <folder>/<YYYY-MM-DD>/<HHMMSS-mmm>.json   {"time", "score", "label"}, and with the wake check (wakecheck.py)
+                                            "stt" (what xAI heard in the clip) and "guess" ("true"/"false")
 
 and its id is "<YYYY-MM-DD>/<HHMMSS-mmm>". The label is the user's, set through Hermes (wake_label.sh,
 POST /keryx/wake-label): "false" for a false wake, "true" for a real one, null for not labelled.
@@ -40,6 +41,13 @@ class WakeLog:
         info = {"time": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now)), "score": score, "label": None}
         (day / f"{stem}.json").write_text(json.dumps(info) + "\n")
         return f"{day.name}/{stem}"
+
+    def annotate(self, wake_id, **fields):
+        """Adds fields to a wake's JSON (the second opinion on it: what xAI heard, the guess)."""
+        path = self.folder / f"{wake_id}.json"
+        info = json.loads(path.read_text())
+        info.update(fields)
+        path.write_text(json.dumps(info, ensure_ascii=False) + "\n")
 
     def recent(self, count=10):
         """The latest wakes, newest first: [{"id", "time", "score", "label"}]."""

@@ -40,8 +40,10 @@ answer in progress has been played, or at once with "now" (as the stop button do
 
 Wake log (wakelog.py): at every detection of the wake word the board POSTs <path>/wake-clip with the token, the
 header X-Keryx-Score and the last 3 s the wake word heard as the body (16 kHz mono PCM16 LE, the ASR beam), beside
-the WebSocket; GET <path>/wakes?count=N lists the latest, and POST <path>/wake-label with {"label": "false"|"true"|
-null} and optionally {"id": "…"} labels one (the latest when no id is given).
+the WebSocket; with the wake check (wakecheck.py) xAI transcribes it, and a conversation the wake started without
+Keryx in that transcript is ended as a false wake; GET <path>/wakes?count=N lists the latest, and
+POST <path>/wake-label with {"label": "false"|"true"|null} and optionally {"id": "…"} labels one (the latest when no
+id is given).
 
 The bridge checks the token against the KERYX_BRIDGE_TOKEN setting. Everything else (Hermes, xAI, the options)
 lives in voice.py.
@@ -49,6 +51,7 @@ lives in voice.py.
 
 import asyncio
 import base64
+import io
 import json
 import os
 import pathlib
@@ -56,12 +59,14 @@ import secrets
 import socket
 import sys
 import time
+import wave
 
 import aiohttp
 import numpy as np
 from aiohttp import web
 
 from .voice import CONFIG, PACKAGE, STT_RATE, Assistant, apply_gain, dbfs, env, log, speakable, untagged
+from .wakecheck import DEFAULT_KEYTERMS, says_keryx, transcribe
 from .wakelog import LABELS, WakeLog
 
 KEEP_S = 120  # seconds of the board's microphone kept for STT
@@ -315,6 +320,9 @@ class Bridge:
         self.saved_log_task = None  # a reference, so that the task is not collected while it runs
         self.wakelog = WakeLog(args.wakes) if args.wakes else None
         log(f"wake log: {self.wakelog.folder if self.wakelog else 'off'}")
+        self.keyterms = [k.strip() for k in args.wake_keyterms.split(",") if k.strip()]
+        self.wake_checks = set()  # running checks, so that the tasks are not collected
+        log(f"wake check: {'on, key terms ' + ', '.join(self.keyterms) if args.wake_check else 'off'}")
 
     def status(self):
         if self.link.ws is None:
@@ -491,19 +499,57 @@ class Bridge:
         """POST from the board, the body the wake word's last 3 s of audio: kept in the wake log."""
         if not self.authorized(request):
             return web.json_response({"error": "bad token"}, status=401)
+        received = time.monotonic()
         pcm = await request.read()
-        if self.wakelog is None:
-            return web.json_response({"error": "the wake log is off (--no-wakes)"}, status=409)
+        if self.wakelog is None and not self.args.wake_check:
+            return web.json_response({"error": "the wake log and the wake check are off"}, status=409)
         if not pcm or len(pcm) % 2 or len(pcm) > 10 * 2 * STT_RATE:
             return web.json_response({"error": "expected up to 10 s of 16 kHz PCM16"}, status=400)
         try:
             score = float(request.headers.get("X-Keryx-Score", ""))
         except ValueError:
             score = None
-        wake_id = await asyncio.to_thread(self.wakelog.save, pcm, score)
-        log(f"board → wake clip {wake_id}, score {score}, {len(pcm) / 2 / STT_RATE:.1f} s",
+        wake_id = await asyncio.to_thread(self.wakelog.save, pcm, score) if self.wakelog is not None else None
+        log(f"board → wake clip {wake_id or '(not kept)'}, score {score}, {len(pcm) / 2 / STT_RATE:.1f} s",
             None if self.assistant.idle() else self.assistant.conversation)
+        if self.args.wake_check:
+            task = asyncio.create_task(self.check_wake(pcm, wake_id, received))
+            self.wake_checks.add(task)
+            task.add_done_callback(self.wake_checks.discard)
         return web.json_response({"id": wake_id})
+
+    async def check_wake(self, pcm, wake_id, received):
+        """The second opinion (wakecheck.py): xAI transcribes the clip; without Keryx in it, the conversation this
+        wake started ends as on a stop phrase. Any failure leaves the conversation alone."""
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(STT_RATE)
+            w.writeframes(pcm)
+        t0 = time.monotonic()
+        try:
+            text = await transcribe(self.assistant.session, self.assistant.xai, buf.getvalue(), self.keyterms,
+                                    self.args.wake_check_timeout)
+        except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError, ValueError) as e:
+            log(f"wake check: no transcript ({e!r}), the wake stands")
+            return
+        heard = says_keryx(text)
+        conv = self.assistant.conversation
+        # the conversation this wake started: the board sends the clip within a second of its wake message
+        ours = conv is not None and conv.state != "over" and abs(conv.start - received) < 3 and \
+            not getattr(conv, "wake_checked", False)
+        log(f"wake check: xAI heard {text!r} in {(time.monotonic() - t0) * 1000:.0f} ms: "
+            f"{'the wake phrase' if heard else 'no wake phrase, a false wake'}", conv if ours else None)
+        if wake_id is not None:
+            try:
+                await asyncio.to_thread(self.wakelog.annotate, wake_id, stt=text, guess="true" if heard else "false")
+            except (OSError, ValueError) as e:
+                log(f"wake check: cannot note it in {wake_id}: {e}")
+        if ours:
+            conv.wake_checked = True
+            if not heard:
+                conv.end(f"false wake: xAI heard {text!r} in its clip")
 
     async def http_wakes(self, request):
         """GET ?count=N: the latest wakes in the wake log, newest first."""
@@ -690,6 +736,15 @@ def add_server_arguments(parser):
                         help="where the board's clip of every wake word goes (16 kHz WAV and JSON, a folder a day), "
                              "for training it (default KERYX_WAKES, else ~/.local/share/keryx/wakes)")
     parser.add_argument("--no-wakes", dest="wakes", action="store_const", const=None, help="keep no wake clips")
+    parser.add_argument("--no-wake-check", dest="wake_check", action="store_false",
+                        default=env("KERYX_WAKE_CHECK", "on").lower() not in ("0", "off", "no", "false"),
+                        help="do not have xAI transcribe each wake clip and end a conversation started without the "
+                             "wake phrase in it (default KERYX_WAKE_CHECK, else on)")
+    parser.add_argument("--wake-keyterms", default=env("KERYX_WAKE_KEYTERMS", DEFAULT_KEYTERMS),
+                        help="the wake check's key terms for xAI, comma-separated "
+                             f"(default KERYX_WAKE_KEYTERMS, else {DEFAULT_KEYTERMS})")
+    parser.add_argument("--wake-check-timeout", type=float, default=2.0,
+                        help="seconds the wake check waits for xAI; later, the wake stands (default 2)")
     parser.add_argument("--tts-rate", type=int, default=24000, choices=[16000, 24000],
                         help="sample rate of the answer sent to the board (default 24000, xAI's own)")
 

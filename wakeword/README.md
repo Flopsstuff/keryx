@@ -63,7 +63,9 @@ quieter than later ones.
 The bridge keeps every detection as the last 3 s the wake word heard before it fired (16 kHz, the R channel at the
 firmware's ASR gain: the same audio the model saw, so the last 2 s are the window it fired on) with a JSON next to
 it, in `~/.local/share/keryx/wakes/` on the bridge host ([../bridge/README.md](../bridge/README.md#wake-log)).
-`"label": "false"` is a false wake the user pointed out to Hermes, `"true"` a real one.
+`"label": "false"` is a false wake the user pointed out to Hermes, `"true"` a real one. With the bridge's wake check
+`"stt"` is what xAI heard in the clip (with the wake phrase as key terms) and `"guess": "false"` a clip without Keryx
+in it: mostly room noise the model fired on, the negatives to add.
 
 ```bash
 rsync -a rpi5.local:.local/share/keryx/wakes/ data/wakes/
