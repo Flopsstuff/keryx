@@ -18,7 +18,7 @@ Hermes' OpenAI-compatible API, turns the reply into speech with xAI TTS and stre
 | `voiceid/` | voice ID: recording the household, speaker embedding models, calibration, the live stand; makes the bundle the bridge's `keryx_bridge/voiceid.py` loads |
 | `tools/` | Mac bench tools: `converse.py` (the bridge pipeline over the board's USB sound card), `listen.py`, the mic-array `dashboard`, `xvf` control client |
 | `cad/` | printed parts (mic hat, encoder knob): Onshape FeatureScript features (`.fs`) and their STLs |
-| `setup.sh`, `say.sh`, `set_volume.sh`, `mute.sh`, `unmute.sh`, `console.sh` | one-step install on the bridge host; speak, set the volume, mute the microphone, run console commands through a running bridge |
+| `setup.sh`, `say.sh`, `set_volume.sh`, `mute.sh`, `unmute.sh`, `console.sh`, `wake_label.sh` | one-step install on the bridge host; speak, set the volume, mute the microphone, run console commands, label a false wake through a running bridge |
 
 ## Documentation
 
@@ -131,7 +131,9 @@ image, and why `partitions.csv` must keep NVS at 0x9000 (then two 3 MB OTA slots
 **Board ⇄ bridge protocol v1** is defined in two places that must change together: `firmware/README.md` ("Bridge
 protocol v1", the `keryx_link` component) and the docstring of `bridge/keryx_bridge/server.py`. JSON text frames for
 control (`hello`/`ready`, `wake`, `listen_stop`, `play_start`/`play_end`/`play_stop`, `played`, `sound`, `volume`,
-`mute`, `stop`, `console`); binary frames for 16 kHz PCM up and 24 or 16 kHz PCM down (the `rate` of `play_start`). The
+`mute`, `stop`, `console`); binary frames for 16 kHz PCM up and 24 or 16 kHz PCM down (the `rate` of `play_start`).
+Beside it, at every detection the board POSTs the last 3 s the wake word heard (R) to `/keryx/wake-clip`, which the
+bridge keeps in its wake log (`keryx_bridge/wakelog.py`, `~/.local/share/keryx/wakes`) for training the wake word. The
 board keeps Wi-Fi power save off from `wake` or `play_start` until 5 s after the stream and playback end; when idle it
 sleeps (DTIM 3), so the first message to an idle board can take up to ~300 ms.
 
@@ -161,7 +163,9 @@ logging) behind three adapters — a microphone, a speaker and a board — so `s
   code, docs or the prompt;
 - HTTP control on the bridge port with the board token: `GET /keryx/status`, `POST /keryx/volume`,
   `POST /keryx/say`, `POST /keryx/mute` (a timed mute is the bridge's timer, lost if the bridge restarts),
-  `POST /keryx/console` (a safe set of console commands, checked on the board).
+  `POST /keryx/console` (a safe set of console commands, checked on the board), `GET /keryx/wakes` and
+  `POST /keryx/wake-label` (the wake log; Hermes labels a false wake with `wake_label.sh` when told, as the prompt
+  asks).
 
 Hermes is reached only through its API server (`/v1/chat/completions`, streamed, with `hermes.tool.progress`
 events); per-request options go in `model_options`. Latency is dominated by Hermes' agent loop, not by the audio

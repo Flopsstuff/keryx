@@ -10,6 +10,8 @@
   keryx-bridge mute [30m|2h]     stop the board listening (for a while: s, m or h; a bare number is minutes)
   keryx-bridge unmute            start it listening again
   keryx-bridge console LINE      run a line of the board's console through a running bridge (a safe set only)
+  keryx-bridge wakes [N]         the latest N (10) wakes in the wake log: id, time, score, label
+  keryx-bridge wake-label false|true|none [ID]   label a wake in the wake log, the latest without an ID
 """
 
 import argparse
@@ -265,6 +267,19 @@ def main():
             print(answer["output"], end="")
             sys.exit(0 if answer["ok"] else 1)
         sys.exit(json.dumps(answer, ensure_ascii=False))
+    elif command == "wakes" and len(rest) <= 1 and all(x.isdigit() for x in rest):
+        status, answer = asyncio.run(control("GET", f"wakes?count={rest[0] if rest else 10}"))
+        if status != 200:
+            sys.exit(json.dumps(answer, ensure_ascii=False))
+        for wake in answer:
+            print(f"{wake['id']}  {wake.get('time', '?')}  score {wake.get('score')}  label {wake.get('label')}")
+    elif command == "wake-label" and 1 <= len(rest) <= 2 and rest[0] in ("false", "true", "none"):
+        body = {"label": None if rest[0] == "none" else rest[0]}
+        if len(rest) == 2:
+            body["id"] = rest[1]
+        status, answer = asyncio.run(control("POST", "wake-label", body))
+        print(json.dumps(answer, ensure_ascii=False))
+        sys.exit(0 if status == 200 else 1)
     else:
         sys.exit(f"unknown command {' '.join(argv)!r}\n\n{__doc__.strip()}")
 

@@ -58,6 +58,17 @@ The window's Space key is audible in every push-to-talk take: its press lands 0.
 0.21–0.06 s before the end. Takes recorded before the firmware raised the ASR gain (label `keryx`) are 12 dB
 quieter than later ones.
 
+## False wakes from the bridge
+
+The bridge keeps every detection as the last 3 s the wake word heard before it fired (16 kHz, the R channel at the
+firmware's ASR gain: the same audio the model saw, so the last 2 s are the window it fired on) with a JSON next to
+it, in `~/.local/share/keryx/wakes/` on the bridge host ([../bridge/README.md](../bridge/README.md#wake-log)).
+`"label": "false"` is a false wake the user pointed out to Hermes, `"true"` a real one.
+
+```bash
+rsync -a rpi5.local:.local/share/keryx/wakes/ data/wakes/
+```
+
 ## `trim.py` — cutting takes to the word
 
 ```bash
