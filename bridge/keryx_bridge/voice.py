@@ -43,7 +43,7 @@ DEFAULT_PROMPT = PACKAGE / "prompts" / "voice.md"
 DEFAULT_STOP_PHRASES = PACKAGE / "stop_phrases.txt"
 STT_RATE = 16000
 VOICE_WAIT = 2.0  # s a request waits for its voice ID before it goes without the tag
-STOP_HOLD = 1.5  # s a partial transcript that is a stop phrase must stay the latest to end the conversation
+STOP_HOLD = 0.5  # s past --smart-turn-timeout that a stop phrase in a partial transcript must stay the latest
 
 
 def config_file():
@@ -576,10 +576,12 @@ class Conversation:
 
     async def listen(self, ws):
         while True:
-            if self.stop_partial and time.monotonic() - self.stop_partial[1] >= STOP_HOLD:
-                # nothing after it: its final transcript is not coming (xAI drops or garbles some words in finals)
+            hold = self.args.smart_turn_timeout / 1000 + STOP_HOLD
+            if self.stop_partial and time.monotonic() - self.stop_partial[1] >= hold:
+                # longer than the silence after which xAI always ends the turn, yet no final transcript: it is not
+                # coming (xAI drops or garbles some words in finals), and the phrase was the whole utterance
                 log(f"STT → partial {self.last_partial!r} stayed the stop phrase «{self.stop_partial[0]}» for "
-                    f"{STOP_HOLD:g} s with no final transcript", self)
+                    f"{hold:g} s with no final transcript", self)
                 self.app.notes.append(f"[The user ended the conversation by saying «{self.last_partial}»]")
                 self.end(f"stop phrase «{self.stop_partial[0]}»")
                 self.stop_partial = None
