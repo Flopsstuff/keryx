@@ -4,15 +4,18 @@ At every detection the board POSTs the last 3 s of the wake word's input (the AS
 audio the model fired on; speech-to-text may hear L instead) to /keryx/wake-clip (server.py). Each is kept as
 
   <folder>/<YYYY-MM-DD>/<HHMMSS-mmm>.wav    16 kHz mono PCM16, ending where the wake word fired
-  <folder>/<YYYY-MM-DD>/<HHMMSS-mmm>.json   {"time", "score", "label"}
+  <folder>/<YYYY-MM-DD>/<HHMMSS-mmm>.json   {"time", "score", "label"}, and with the wake check (wakecheck.py)
+                                            "stt" (what xAI heard in the clip) and "guess" ("true"/"false")
 
 and its id is "<YYYY-MM-DD>/<HHMMSS-mmm>". The label is the user's, set through Hermes (wake_label.sh,
 POST /keryx/wake-label): "false" for a false wake, "true" for a real one, null for not labelled.
 """
 
 import json
+import os
 import pathlib
 import re
+import threading
 import time
 import wave
 
@@ -23,8 +26,19 @@ WAKE_ID = re.compile(r"\d{4}-\d{2}-\d{2}/\d{6}-\d{3}")  # <YYYY-MM-DD>/<HHMMSS-m
 
 
 class WakeLog:
+    """Its methods run in worker threads (asyncio.to_thread): one lock around every read-modify-write of a JSON, so
+    that the wake check's fields and the user's label never overwrite each other, and each write replaces the file
+    whole, so that no reader sees half of one."""
+
     def __init__(self, folder):
         self.folder = pathlib.Path(folder).expanduser()
+        self.lock = threading.Lock()
+
+    @staticmethod
+    def write(path, info):
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(info, ensure_ascii=False) + "\n")
+        os.replace(tmp, path)
 
     def save(self, pcm, score):
         """A clip from the board: written at once; its id."""
@@ -38,8 +52,17 @@ class WakeLog:
             w.setframerate(STT_RATE)
             w.writeframes(pcm)
         info = {"time": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now)), "score": score, "label": None}
-        (day / f"{stem}.json").write_text(json.dumps(info) + "\n")
+        with self.lock:
+            self.write(day / f"{stem}.json", info)
         return f"{day.name}/{stem}"
+
+    def annotate(self, wake_id, **fields):
+        """Adds fields to a wake's JSON (the second opinion on it: what xAI heard, the guess)."""
+        path = self.folder / f"{wake_id}.json"
+        with self.lock:
+            info = json.loads(path.read_text())
+            info.update(fields)
+            self.write(path, info)
 
     def recent(self, count=10):
         """The latest wakes, newest first: [{"id", "time", "score", "label"}]."""
@@ -66,8 +89,9 @@ class WakeLog:
         path = self.folder / f"{wake_id}.json"
         if not WAKE_ID.fullmatch(wake_id) or not path.is_file():
             return None
-        info = json.loads(path.read_text())
-        info["label"] = label
-        path.write_text(json.dumps(info) + "\n")
+        with self.lock:
+            info = json.loads(path.read_text())
+            info["label"] = label
+            self.write(path, info)
         log(f"wake {wake_id} (score {info.get('score')}) labelled {label}")
         return {"id": wake_id, **info}

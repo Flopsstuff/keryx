@@ -65,8 +65,8 @@ defaults.
 The board's console is a serial port: `/dev/cu.usbmodemkeryx_*` on macOS, `/dev/ttyACM*` on Linux. For the first ~4 s
 after boot it is the USB serial/JTAG console (USB 303A:1001), then TinyUSB takes the port (303A:8000, next to the sound
 card). Commands include `status`, `top`, `log`, `log recent|saved` (the journal, kept in NVS by the watchdog when the
-bridge is gone), `wake`, `volume [0-100|up|down]`, `sound wake|thinking|stop|end`, `loop on|mic|off`, `xvf get|set|write`,
-`i2c scan|read|write`, `ring …`, `ota …`, `stt channel`, pairing with `set ssid|password|bridge|token`, `config`,
+bridge is gone), `wake`, `volume [0-100|up|down]`, `sound wake|thinking|stop|end`, `loop on|mic|off`,
+`xvf get|set|write`, `i2c scan|read|write`, `ring …`, `ota …`, `stt channel`, pairing with `set ssid|password|bridge|token`, `config`,
 `erase`, `wifi scan`, `net check <host> <port>`, and `bootloader` / `reboot`; every answer ends with an `ok` or `error`
 line. The full list is in `firmware/README.md#keryx`. Only one process can
 hold the port, so stop `converse.py` / `listen.py` / monitors before flashing.
@@ -133,7 +133,9 @@ protocol v1", the `keryx_link` component) and the docstring of `bridge/keryx_bri
 control (`hello`/`ready`, `wake`, `listen_stop`, `play_start`/`play_end`/`play_stop`, `played`, `sound`, `volume`,
 `mute`, `stop`, `console`); binary frames for 16 kHz PCM up and 24 or 16 kHz PCM down (the `rate` of `play_start`).
 Beside it, at every detection the board POSTs the last 3 s the wake word heard (R) to `/keryx/wake-clip`, which the
-bridge keeps in its wake log (`keryx_bridge/wakelog.py`, `~/.local/share/keryx/wakes`) for training the wake word. The
+bridge keeps in its wake log (`keryx_bridge/wakelog.py`, `~/.local/share/keryx/wakes`) for training the wake word, and
+has xAI transcribe with the wake phrase as key terms (`keryx_bridge/wakecheck.py`, `KERYX_WAKE_CHECK`): without
+Keryx in the transcript the conversation that wake started ends as a false wake (room noise). The
 board keeps Wi-Fi power save off from `wake` or `play_start` until 5 s after the stream and playback end; when idle it
 sleeps (DTIM 3), so the first message to an idle board can take up to ~300 ms.
 
