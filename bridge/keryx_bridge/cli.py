@@ -10,6 +10,7 @@
   keryx-bridge mute [30m|2h]     stop the board listening (for a while: s, m or h; a bare number is minutes)
   keryx-bridge unmute            start it listening again
   keryx-bridge console LINE      run a line of the board's console through a running bridge (a safe set only)
+  keryx-bridge end [--now]       end the conversation once the answer in progress has been played (--now: at once)
   keryx-bridge wakes [N]         the latest N (10) wakes in the wake log: id, time, score, label
   keryx-bridge wake-label false|true|none [ID]   label a wake in the wake log, the latest without an ID
 """
@@ -267,6 +268,10 @@ def main():
             print(answer["output"], end="")
             sys.exit(0 if answer["ok"] else 1)
         sys.exit(json.dumps(answer, ensure_ascii=False))
+    elif command == "end" and rest in ([], ["--now"]):
+        status, answer = asyncio.run(control("POST", "end", {"now": bool(rest)}))
+        print(json.dumps(answer, ensure_ascii=False))
+        sys.exit(0 if status == 200 else 1)
     elif command == "wakes" and len(rest) <= 1 and all(x.isdigit() for x in rest):
         status, answer = asyncio.run(control("GET", f"wakes?count={rest[0] if rest else 10}"))
         if status != 200:

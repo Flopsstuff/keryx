@@ -40,8 +40,10 @@ from .voiceid import PAD as VOICE_PAD, Log as VoiceLog, VoiceID
 
 PACKAGE = pathlib.Path(__file__).resolve().parent
 DEFAULT_PROMPT = PACKAGE / "prompts" / "voice.md"
+DEFAULT_STOP_PHRASES = PACKAGE / "stop_phrases.txt"
 STT_RATE = 16000
 VOICE_WAIT = 2.0  # s a request waits for its voice ID before it goes without the tag
+STOP_HOLD = 0.5  # s past --smart-turn-timeout that a stop phrase in a partial transcript must stay the latest
 
 
 def config_file():
@@ -203,6 +205,37 @@ LATIN = dict(zip("абвгдежзийклмнопрстуфхцчшщыэюя",
 KERYX = re.compile(r"[kc][eiy]r[eiy]?[kxc]+s?")  # Keryx, Kerix, Kirex, Керикс, Кирекс…
 
 
+class StopPhrases:
+    """Phrases that end a conversation on the bridge, without Hermes: a text file, one phrase per line, # comments
+    (stop_phrases.txt). An utterance matches when, after a leading wake phrase, its words are exactly a phrase's
+    words. The file is read again whenever it changes."""
+
+    def __init__(self, path):
+        self.path = path
+        self.mtime = None
+        self.phrases = set()
+
+    def load(self):
+        try:
+            mtime = self.path.stat().st_mtime
+        except OSError as e:
+            if self.mtime is not False:
+                log(f"stop phrases: cannot read {self.path}: {e}")
+            self.mtime, self.phrases = False, set()
+            return
+        if mtime != self.mtime:
+            lines = self.path.read_text().splitlines()
+            self.phrases = {" ".join(words(line)) for line in lines if not line.lstrip().startswith("#")} - {""}
+            self.mtime = mtime
+            log(f"stop phrases: {len(self.phrases)} from {self.path}")
+
+    def match(self, text):
+        """The phrase the utterance is, or None."""
+        self.load()
+        heard = " ".join(words(strip_wake(text)[0]))
+        return heard if heard in self.phrases else None
+
+
 def strip_wake(text):
     """(the rest, the wake phrase) when text starts with "Hey Keryx" or "Keryx" in any of its spellings.
 
@@ -285,6 +318,12 @@ def add_arguments(parser, save_dir):
                         help="keep nothing")
     parser.add_argument("--voiceid-log-days", type=float, default=float(env("KERYX_VOICEID_LOG_DAYS", "90")),
                         help="days the voice ID log keeps (default KERYX_VOICEID_LOG_DAYS, else 90)")
+    parser.add_argument("--stop-phrases", type=config_path,
+                        default=config_path(env("KERYX_STOP_PHRASES_PATH", str(DEFAULT_STOP_PHRASES))),
+                        help="file of phrases that end a conversation at once, without Hermes, one per line "
+                             "(default KERYX_STOP_PHRASES_PATH, else the bundled stop_phrases.txt)")
+    parser.add_argument("--no-stop-phrases", dest="stop_phrases", action="store_const", const=None,
+                        help="no stop phrases: a conversation ends by silence, the button or the end command")
     parser.add_argument("--meter", type=float, default=2.0,
                         help="seconds between STT level lines during a conversation (default 2)")
     parser.add_argument("--heartbeat", type=float, default=15.0,
@@ -348,6 +387,10 @@ class Conversation:
         self.stt_open = None
         self.barge_in_diagnostics = []
         self.voice = app.voiceid.tracker() if app.voiceid else None  # who is talking, over the conversation
+        self.ending = None  # why the conversation is to end now, on purpose: listen() returns on it
+        self.end_after_answer = None  # why it is to end once the answer in progress has been played
+        self.last_partial = ""  # the user's words in the latest partial transcript of the turn under way
+        self.stop_partial = None  # (phrase, when) while the latest partial transcript is a stop phrase
 
     @property
     def answering(self):
@@ -362,6 +405,15 @@ class Conversation:
             self.interrupt(f"wake word (score {score})")
         else:
             log(f"wake (score {score}) while {self.state}: already listening", self)
+
+    def end(self, reason, after_answer=False):
+        """Ends the conversation without waiting for silence: now, or once the answer in progress has been played
+        (an answer cut short by the user cancels that)."""
+        if after_answer and self.answering:
+            log(f"the conversation ends after this answer: {reason}", self)
+            self.end_after_answer = reason
+        else:
+            self.ending = reason
 
     def interrupt(self, reason):
         log(f"interrupting the answer while {self.state}: {reason}", self)
@@ -495,6 +547,8 @@ class Conversation:
             seconds = sum(len(c) for c in self.sent) / 2 / STT_RATE
             log(f"=== conversation {self.number} over: {self.exchanges} exchanges, {seconds:.1f} s of audio "
                 "to STT; say \"Hey Keryx\" to start another", self)
+            if self.ending:
+                await self.app.board.sound("end", self)  # ended on purpose: a chime and the ring closing
             await self.app.board.listen_stop(self)
             self.save()
 
@@ -522,6 +576,18 @@ class Conversation:
 
     async def listen(self, ws):
         while True:
+            hold = self.args.smart_turn_timeout / 1000 + STOP_HOLD
+            if self.stop_partial and time.monotonic() - self.stop_partial[1] >= hold:
+                # longer than the silence after which xAI always ends the turn, yet no final transcript: it is not
+                # coming (xAI drops or garbles some words in finals), and the phrase was the whole utterance
+                log(f"STT → partial {self.last_partial!r} stayed the stop phrase «{self.stop_partial[0]}» for "
+                    f"{hold:g} s with no final transcript", self)
+                self.app.notes.append(f"[The user ended the conversation by saying «{self.last_partial}»]")
+                self.end(f"stop phrase «{self.stop_partial[0]}»")
+                self.stop_partial = None
+            if self.ending:
+                log(f"conversation ended: {self.ending}", self)
+                return
             if not self.answering and not self.user_talking:
                 limit = self.args.silence if self.exchanges == 0 else self.args.follow_up
                 if time.monotonic() - self.waiting_since > limit:
@@ -565,6 +631,9 @@ class Conversation:
         confidence = event.get("end_of_turn_confidence")
         extra = f", end of turn {confidence:.2f}" if confidence is not None and user else ""
         log(f"STT → {flag}{extra}: {self.describe(event, user, echo)}", self)
+        self.last_partial = user
+        phrase = self.app.stop_phrases.match(user) if self.app.stop_phrases is not None and user.strip() else None
+        self.stop_partial = (phrase, time.monotonic()) if phrase else None  # anything new heard cancels it
         if not user:
             return
         if self.answering and self.state == "speaking":
@@ -580,9 +649,33 @@ class Conversation:
             return
         self.user_talking = True
 
+    def stop_phrase(self, text, partial, language):
+        """The stop phrase the utterance is, judged by its final text or, when that came back garbled, by its last
+        partial one: the final transcript of a short phrase is sometimes in another language ("Иди нахер." → "一 枚",
+        "Иди на." → "İyiyim erken."). Garbled: a language not in --languages, or no word in common with the partial;
+        a final that only goes on from the partial ("Всё, пока не ушёл, …") is the user's. Ends the conversation on
+        a stop phrase; returns whether it did."""
+        phrases = self.app.stop_phrases
+        if phrases is None:
+            return False
+        garbled = (language and self.args.languages and language not in self.args.languages) or \
+            not set(words(text)) & set(words(partial))
+        for heard in (text, partial) if garbled else (text,):
+            if heard.strip() and (phrase := phrases.match(heard)):
+                which = "" if heard is text else f" (its partial transcript {heard!r})"
+                log(f"STT → speech_final {text!r}{which}: the stop phrase «{phrase}»", self)
+                self.app.notes.append(f"[The user ended the conversation by saying «{heard}»]")
+                self.end(f"stop phrase «{phrase}»")
+                return True
+        return False
+
     def on_utterance(self, event):
         self.user_talking = False
         text, echo = self.split_echo(event)
+        partial, self.last_partial, self.stop_partial = self.last_partial, "", None
+        # first of all, before the echo and language checks: "arrivederci" may come back as Italian
+        if self.stop_phrase(text, partial, event.get("language")):
+            return
         if not text.strip():
             if echo:
                 log(f"STT → speech_final: {self.describe(event, text, echo)}", self)
@@ -638,7 +731,11 @@ class Conversation:
 
     def answered(self, task):
         if task.cancelled():
+            self.end_after_answer = None  # the user cut the answer short: they are still talking
             return  # whoever interrupted it is already talking
+        if self.end_after_answer:
+            self.ending = self.end_after_answer
+            return
         self.waiting_since = time.monotonic()
         if self.args.follow_up > 0:
             log(f"listening for a follow-up for {self.args.follow_up:g} s", self)
@@ -683,6 +780,11 @@ class Assistant:
         self.conversation = None
         self.conversations = 0
         self.voiceid = self.load_voiceid()
+        self.stop_phrases = StopPhrases(args.stop_phrases) if args.stop_phrases else None
+        if self.stop_phrases is not None:
+            self.stop_phrases.load()
+        else:
+            log("stop phrases: off (--no-stop-phrases)")
         self.voicelog = None
         if self.voiceid and self.args.voiceid_log is not None:
             self.voicelog = VoiceLog(self.args.voiceid_log, self.args.voiceid_log_days)
@@ -804,6 +906,15 @@ class Assistant:
         else:
             self.touch()
         self.notes.append(f"[Keryx said aloud on its own: «{untagged(text)}»]")
+
+    def end_conversation(self, now=False):
+        """The end command (end.sh): None without a conversation, else "now" or "after the answer"."""
+        if self.idle():
+            return None
+        conv = self.conversation
+        later = not now and conv.answering
+        conv.end("the end command" + (" (--now)" if now else ""), after_answer=later)
+        return "after the answer" if later else "now"
 
     # ------------------------------------------------------------ wake events
 

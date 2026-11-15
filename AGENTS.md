@@ -18,7 +18,7 @@ Hermes' OpenAI-compatible API, turns the reply into speech with xAI TTS and stre
 | `voiceid/` | voice ID: recording the household, speaker embedding models, calibration, the live stand; makes the bundle the bridge's `keryx_bridge/voiceid.py` loads |
 | `tools/` | Mac bench tools: `converse.py` (the bridge pipeline over the board's USB sound card), `listen.py`, the mic-array `dashboard`, `xvf` control client |
 | `cad/` | printed parts (mic hat, encoder knob): Onshape FeatureScript features (`.fs`) and their STLs |
-| `setup.sh`, `say.sh`, `set_volume.sh`, `mute.sh`, `unmute.sh`, `console.sh`, `wake_label.sh` | one-step install on the bridge host; speak, set the volume, mute the microphone, run console commands, label a false wake through a running bridge |
+| `setup.sh`, `say.sh`, `set_volume.sh`, `mute.sh`, `unmute.sh`, `console.sh`, `end.sh`, `wake_label.sh` | one-step install on the bridge host; speak, set the volume, mute the microphone, run console commands, end the conversation, label a false wake through a running bridge |
 
 ## Documentation
 
@@ -65,7 +65,7 @@ defaults.
 The board's console is a serial port: `/dev/cu.usbmodemkeryx_*` on macOS, `/dev/ttyACM*` on Linux. For the first ~4 s
 after boot it is the USB serial/JTAG console (USB 303A:1001), then TinyUSB takes the port (303A:8000, next to the sound
 card). Commands include `status`, `top`, `log`, `log recent|saved` (the journal, kept in NVS by the watchdog when the
-bridge is gone), `wake`, `volume [0-100|up|down]`, `sound wake|thinking|stop`, `loop on|mic|off`, `xvf get|set|write`,
+bridge is gone), `wake`, `volume [0-100|up|down]`, `sound wake|thinking|stop|end`, `loop on|mic|off`, `xvf get|set|write`,
 `i2c scan|read|write`, `ring …`, `ota …`, `stt channel`, pairing with `set ssid|password|bridge|token`, `config`,
 `erase`, `wifi scan`, `net check <host> <port>`, and `bootloader` / `reboot`; every answer ends with an `ok` or `error`
 line. The full list is in `firmware/README.md#keryx`. Only one process can
@@ -141,7 +141,9 @@ sleeps (DTIM 3), so the first message to an idle board can take up to ~300 ms.
 logging) behind three adapters — a microphone, a speaker and a board — so `server.py` (WebSocket board) and
 `tools/converse.py` (USB board) share it. Behaviours that span several functions and are easy to break:
 - one xAI STT session (Smart Turn) per conversation, open from the wake word until `--follow-up` seconds of
-  silence (`KERYX_FOLLOW_UP`, 7), so follow-ups need no wake word and talking over an answer interrupts it;
+  silence (`KERYX_FOLLOW_UP`, 7), so follow-ups need no wake word and talking over an answer interrupts it; it ends
+  sooner on a stop phrase (`keryx_bridge/stop_phrases.txt`, a whole utterance, checked on the bridge without Hermes)
+  or the end command (`end.sh`, `POST /keryx/end`, which Hermes runs when told the conversation is over);
 - the bridge keeps no chat history: each request carries only the new utterance with `X-Hermes-Session-Id`, and
   Hermes loads the history from that session. The session outlives conversations — a wake word within
   `--session-timeout` (`KERYX_SESSION_TIMEOUT`, 1h) of the last exchange continues it — and survives restarts
@@ -163,9 +165,9 @@ logging) behind three adapters — a microphone, a speaker and a board — so `s
   code, docs or the prompt;
 - HTTP control on the bridge port with the board token: `GET /keryx/status`, `POST /keryx/volume`,
   `POST /keryx/say`, `POST /keryx/mute` (a timed mute is the bridge's timer, lost if the bridge restarts),
-  `POST /keryx/console` (a safe set of console commands, checked on the board), `GET /keryx/wakes` and
-  `POST /keryx/wake-label` (the wake log; Hermes labels a false wake with `wake_label.sh` when told, as the prompt
-  asks).
+  `POST /keryx/console` (a safe set of console commands, checked on the board), `POST /keryx/end`,
+  `GET /keryx/wakes` and `POST /keryx/wake-label` (the wake log; Hermes labels a false wake with `wake_label.sh`
+  when told, as the prompt asks).
 
 Hermes is reached only through its API server (`/v1/chat/completions`, streamed, with `hermes.tool.progress`
 events); per-request options go in `model_options`. Latency is dominated by Hermes' agent loop, not by the audio

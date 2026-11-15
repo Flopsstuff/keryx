@@ -77,12 +77,13 @@ predecessors.
 - AEC: with clean playback the echo of speech from a speaker on the headphone jack reaches the ASR beam at the noise
   floor. The XVF3800's `AUDIO_MGR_SYS_DELAY` of −30 samples in this I2S build is right: 0, 12, 30 or 60 let the
   echo through.
-- A detection prints `wake score=0.973` on the serial port (`components/keryx_console`, as in `usb-soundcard`) and
-  plays a chime on the headphone jack, mixed into the host's playback. `sound thinking` loops a quiet "thinking"
-  sound until `sound stop`, until the host's audio starts (above −54 dBFS) or for 60 s at most; `sound wake`
-  plays the chime. The sounds are synthesised by `sounds/make_sounds.py` (`--export` writes the chosen ones to
-  `keryx/main/keryx_sounds.h`; without it, candidates to listen to go to `sounds/candidates/`). The log goes to the same port, with a report every
-  5 s: peak score, ASR level, processing time per 5 ms block (about 0.5 ms), USB microphone and speaker buffers.
+- A detection prints `wake score=0.973` on the serial port (`components/keryx_console`, as in `usb-soundcard`) and plays
+  a chime on the headphone jack, mixed into the host's playback. `sound thinking` loops a quiet "thinking" sound until
+  `sound stop`, until the host's audio starts (above −54 dBFS) or for 60 s at most; `sound wake` plays the chime,
+  `sound end` the short falling one (and the ring's closing) of a conversation ended on purpose. The sounds are made by
+  `sounds/make_sounds.py` (`--export` writes the chosen ones to `keryx/main/keryx_sounds.h`; without it, candidates to
+  listen to go to `sounds/candidates/`). The log goes to the same port, with a report every 5 s: peak score, ASR level,
+  processing time per 5 ms block (about 0.5 ms), USB microphone and speaker buffers.
 - Serial port commands besides `bootloader` and `reboot`: `loop on` puts the XVF3800's echo reference — what was
   played — on the left capture channel instead of the processed beam, to measure the playback path; `loop mic`
   puts microphone 0 there, before AEC; `loop off` restores the beam. `xvf get|set <resid> <cmd> <int32|float|uint8>
@@ -188,7 +189,9 @@ predecessors.
   (marks at 12, 3, 6 and 9, amber by day and yellow at night, the minute hand one blue pixel, the hour hand the two
   green pixels nearest its angle; the hands cover the marks, the minute hand the hour hand), the same clock with red
   marks when muted, a level meter while listening (the whole conversation) and while answering, a purple comet while
-  waiting for the answer (the thinking sound), one orange pixel breathing without a bridge, and for 1.5 s after any
+  waiting for the answer (the thinking sound), one orange pixel breathing without a bridge, for 0.3 s when the bridge
+  ends a conversation on purpose (`{"type":"sound","name":"end"}`: a stop phrase, the end command, the button) the
+  whole ring orange, shrinking into two points at 3 and 9 o'clock that go out, and for 1.5 s after any
   volume change an arc as long as the volume. The meter: the pixels at 3 and 9 o'clock stay at half brightness, and arcs
   grow from them both ways, to meet at 12 and 6 at full level (quick up, slow down; brightest at the roots, over a faint
   glow of the rest). Listening it follows the ASR beam's peak, −45 to −12 dBFS, in blue (hue 220°), the glow breathing;
@@ -222,7 +225,7 @@ are PCM16 little-endian mono.
 | board → bridge | `{"type":"wake","score":0.97,"preroll_ms":500}` | the wake word fired; audio follows |
 | board → bridge | binary, 16 kHz, 20 ms (640 bytes) | the ASR beam: `preroll_ms` from before the wake, then live, until `listen_stop`. A wake during a stream sends `preroll_ms: 0` and the stream goes on unbroken |
 | bridge → board | `{"type":"listen_stop"}` | stop streaming (the board stops by itself after 2 min) |
-| bridge → board | `{"type":"sound","name":"wake"\|"thinking"\|"stop"}` | the board's own sounds |
+| bridge → board | `{"type":"sound","name":"wake"\|"thinking"\|"stop"\|"end"}` | the board's own sounds; `end` (a conversation ended on purpose: a stop phrase, the end command, the button) also closes the ring for 0.3 s |
 | bridge → board | `{"type":"play_start","rate":24000}`, binary, `{"type":"play_end"}` | an answer, 24 or 16 kHz, any frame size, faster than real time is fine: the board buffers 10 s (holding back TCP beyond that), starts once 150 ms are queued and upsamples to 48 kHz |
 | bridge → board | `{"type":"play_stop"}` | cut the answer now (10 ms fade) |
 | board → bridge | `{"type":"played"}` | the answer has really finished playing, or was cut |

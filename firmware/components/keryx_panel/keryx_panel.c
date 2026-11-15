@@ -22,6 +22,7 @@ static const char *TAG = "panel";
 #define RETRY_MS 2000           // a missing module is looked for again this often
 #define LONG_PRESS_MS 1000
 #define VOLUME_SHOW_MS 1500     // the ring shows the volume this long after it last changed
+#define END_MS 300              // the end of a conversation: the ring closes in this time
 #define MAX_STEPS 50            // more detents than this in one frame is a misread, not a turn
 
 #define RING_PIXELS 24
@@ -209,6 +210,7 @@ static volatile bool ring_reversed;
 // the most any channel gets, in % of full: by day and by night, and the minutes after midnight each begins
 static volatile int day_percent = 20, night_percent = 5, day_from = 7 * 60, night_from = 22 * 60;
 static volatile int hue_listening = 220, hue_speaking = 160;  // `ring hue`
+static volatile int64_t end_at_us;  // when keryx_panel_end() was last called
 
 // whether it is night now; day while the clock is not set
 static bool is_night(void)
@@ -332,6 +334,23 @@ static void clock_face(bool muted)
     put((int)(minutes * RING_PIXELS / 60), 0, 0.25f, 1, hand);
 }
 
+// The conversation ended on purpose, p of the way through (0..1): the whole ring lights up orange for the first
+// fifth, shrinks from 12 and 6 o'clock into two points at 3 and 9 until 0.8, and the two points go out.
+static void end_animation(float p)
+{
+    const int quarter = RING_PIXELS / 4;
+    const float flash = 0.2f, shrunk = 0.8f;
+    // how far from 3 and 9 o'clock the ring is still lit, in quarters
+    const float open = p < flash ? 1 : p < shrunk ? 1 - (p - flash) / (shrunk - flash) : 0;
+    const float level = p < flash ? 0.6f + 0.4f * p / flash : p < shrunk ? 1 : 1 - (p - shrunk) / (1 - shrunk);
+    for (int i = 0; i < RING_PIXELS; i++) {
+        const int to3 = abs(i - quarter), to9 = abs(i - 3 * quarter);
+        const int d = to3 < to9 ? to3 : to9;  // pixels to the nearer of 3 and 9 o'clock, 0..quarter
+        const float lit = open * quarter - d + 1;  // the edge pixel lit in part; the points always
+        add(i, 1.0f, 0.4f, 0, level * (lit >= 1 ? 1 : lit > 0 ? lit : 0));
+    }
+}
+
 static void render(int64_t now)
 {
     static int last_volume = -1;
@@ -365,6 +384,8 @@ static void render(int64_t now)
                 add(i, 0, 0.3f, 1, 0.3f);
             }
         }
+    } else if (end_at_us != 0 && now - end_at_us < END_MS * 1000LL) {
+        end_animation((now - end_at_us) / (END_MS * 1000.0f));
     } else if (now < volume_until) {
         // an arc clockwise from 12 o'clock, as long as the volume; the last pixel lit in part
         const float lit = volume * RING_PIXELS / 100.0f;
@@ -521,6 +542,11 @@ void keryx_panel_set_hues(int listening, int speaking)
 {
     hue_listening = listening;
     hue_speaking = speaking;
+}
+
+void keryx_panel_end(void)
+{
+    end_at_us = esp_timer_get_time();
 }
 
 bool keryx_panel_night(void)

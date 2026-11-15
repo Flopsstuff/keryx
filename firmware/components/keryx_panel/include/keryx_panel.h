@@ -47,6 +47,9 @@ void keryx_panel_set_brightness(int day, int night, int day_minute, int night_mi
 // The hues (0..359) of listening and of speaking.
 void keryx_panel_set_hues(int listening, int speaking);
 
+// The conversation was ended on purpose: the ring closes for 0.3 s over whatever it shows.
+void keryx_panel_end(void);
+
 // Whether the ring is at its night brightness now.
 bool keryx_panel_night(void);
 
