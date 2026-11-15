@@ -386,7 +386,7 @@ class Conversation:
         self.stt_open = None
         self.barge_in_diagnostics = []
         self.voice = app.voiceid.tracker() if app.voiceid else None  # who is talking, over the conversation
-        self.ending = None  # why the conversation is to end now: listen() returns on it
+        self.ending = None  # why the conversation is to end now, on purpose: listen() returns on it
         self.end_after_answer = None  # why it is to end once the answer in progress has been played
 
     @property
@@ -544,6 +544,8 @@ class Conversation:
             seconds = sum(len(c) for c in self.sent) / 2 / STT_RATE
             log(f"=== conversation {self.number} over: {self.exchanges} exchanges, {seconds:.1f} s of audio "
                 "to STT; say \"Hey Keryx\" to start another", self)
+            if self.ending:
+                await self.app.board.sound("end", self)  # ended on purpose: a chime and the ring closing
             await self.app.board.listen_stop(self)
             self.save()
 

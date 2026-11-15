@@ -19,7 +19,8 @@ board → bridge
 bridge → board
   {"type":"ready"}                                 the answer to a good hello
   {"type":"listen_stop"}                           stop streaming the microphone
-  {"type":"sound","name":"thinking"|"stop"|"wake"} the board's own sounds
+  {"type":"sound","name":"thinking"|"stop"|"wake"|"end"}   the board's own sounds; "end" (a conversation ended on
+                                                   purpose) also closes the LED ring
   {"type":"play_start","rate":24000}, binary PCM16 mono of any size, {"type":"play_end"}   one answer
   {"type":"play_stop"}                             cut the answer now
   {"type":"volume","value":0..100} or "delta":±n   set the board's volume (100 = 0 dB, 0.5 dB a step)
@@ -670,6 +671,7 @@ class Bridge:
         elif kind == "stop":
             if conv is not None and getattr(conv, "task", None):
                 log("board → stop button: conversation ended", conv)
+                conv.ending = "the stop button"
                 conv.task.cancel()
             else:
                 log("board → stop button, no conversation")

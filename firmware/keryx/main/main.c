@@ -158,6 +158,7 @@ static volatile int64_t last_playback_us;
 // interface sounds: requests from other tasks; the playback task keeps the positions
 static volatile bool wake_sound_requested;
 static volatile int mute_sound_requested;  // 1: muted, 2: unmuted
+static volatile bool end_sound_requested;  // the conversation was ended on purpose
 static volatile bool thinking_requested;
 static volatile int played_peak;  // of the last block played (R, before the volume), for the ring
 static volatile int mic_peak;     // of the last block of the ASR beam, for the ring
@@ -458,6 +459,14 @@ static void sound_thinking(bool on)
     thinking_requested = on;
 }
 
+// The conversation was ended on purpose (a stop phrase, the end command, the button): a short falling chime and the
+// ring closing, so that it is clear Keryx no longer listens.
+static void sound_end(void)
+{
+    end_sound_requested = true;
+    keryx_panel_end();
+}
+
 // Writes I2S without a break, at the XVF3800's pace: the host's audio from the playback buffer, or silence, with the
 // interface sounds mixed in.
 static void playback_task(void *arg)
@@ -508,6 +517,10 @@ static void playback_task(void *arg)
         if (wake_sound_requested) {
             wake_sound_requested = false;
             shot = keryx_sound_wake, shot_len = KERYX_SOUND_WAKE_LEN, shot_pos = 0;
+        }
+        if (end_sound_requested) {
+            end_sound_requested = false;
+            shot = keryx_sound_end, shot_len = KERYX_SOUND_END_LEN, shot_pos = 0;
         }
         int mute_sound = mute_sound_requested;
         if (mute_sound) {
@@ -1106,6 +1119,11 @@ static bool console_command(const char *cmd)
         keryx_console_printf("ok %s\n", cmd);
         return true;
     }
+    if (strcmp(cmd, "sound end") == 0) {
+        sound_end();
+        keryx_console_printf("ok %s\n", cmd);
+        return true;
+    }
     if (strcmp(cmd, "sound thinking") == 0 || strcmp(cmd, "sound stop") == 0) {
         sound_thinking(cmd[6] == 't');
         keryx_console_printf("ok %s\n", cmd);
@@ -1275,6 +1293,8 @@ static void bridge_sound(const char *name)
 {
     if (strcmp(name, "wake") == 0) {
         wake_sound_requested = true;
+    } else if (strcmp(name, "end") == 0) {
+        sound_end();
     } else if (strcmp(name, "thinking") == 0 || strcmp(name, "stop") == 0) {
         sound_thinking(name[0] == 't');
     }

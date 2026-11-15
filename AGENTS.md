@@ -65,7 +65,7 @@ defaults.
 The board's console is a serial port: `/dev/cu.usbmodemkeryx_*` on macOS, `/dev/ttyACM*` on Linux. For the first ~4 s
 after boot it is the USB serial/JTAG console (USB 303A:1001), then TinyUSB takes the port (303A:8000, next to the sound
 card). Commands include `status`, `top`, `log`, `log recent|saved` (the journal, kept in NVS by the watchdog when the
-bridge is gone), `wake`, `volume [0-100|up|down]`, `sound wake|thinking|stop`, `loop on|mic|off`, `xvf get|set|write`,
+bridge is gone), `wake`, `volume [0-100|up|down]`, `sound wake|thinking|stop|end`, `loop on|mic|off`, `xvf get|set|write`,
 `i2c scan|read|write`, `ring …`, `ota …`, `stt channel`, pairing with `set ssid|password|bridge|token`, `config`,
 `erase`, `wifi scan`, `net check <host> <port>`, and `bootloader` / `reboot`; every answer ends with an `ok` or `error`
 line. The full list is in `firmware/README.md#keryx`. Only one process can
