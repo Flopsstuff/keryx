@@ -12,12 +12,14 @@ POST /keryx/wake-label): "false" for a false wake, "true" for a real one, null f
 
 import json
 import pathlib
+import re
 import time
 import wave
 
 from .voice import STT_RATE, log
 
 LABELS = ("false", "true", None)
+WAKE_ID = re.compile(r"\d{4}-\d{2}-\d{2}/\d{6}-\d{3}")  # <YYYY-MM-DD>/<HHMMSS-mmm>, nothing else: no path outside
 
 
 class WakeLog:
@@ -62,7 +64,7 @@ class WakeLog:
                 return None
             wake_id = latest[0]["id"]
         path = self.folder / f"{wake_id}.json"
-        if ".." in pathlib.PurePosixPath(wake_id).parts or not path.is_file():
+        if not WAKE_ID.fullmatch(wake_id) or not path.is_file():
             return None
         info = json.loads(path.read_text())
         info["label"] = label
